@@ -15,8 +15,13 @@ class ProgressSync:
     - GET  /reading/bookapi/bookshelf/info/v:version/ → 书架列表
     """
 
-    def __init__(self, client: FanqieClient) -> None:
+    def __init__(self, client: FanqieClient, books_api: "BooksAPI | None" = None) -> None:
         self._client = client
+        # 延迟导入避免循环依赖
+        if books_api is None:
+            from cli_novel_reader.fanqie.books import BooksAPI
+            books_api = BooksAPI(client)
+        self._books_api = books_api
 
     # ── 书架 ───────────────────────────────────────────
 
@@ -53,7 +58,6 @@ class ProgressSync:
             info = detail_map.get(bid, {})
             prog = progress_map.get(bid, {})
             prog_item_id = prog.get("item_id", "0")
-            prog_idx = prog.get("index", -1)
             prog_ts = prog.get("read_timestamp", 0)
             has_progress = bool(prog_item_id and prog_item_id != "0" and prog_ts > 0)
             result.append({
@@ -66,7 +70,8 @@ class ProgressSync:
                 "status": "连载中" if str(info.get("creation_status")) == "1" else "已完结",
                 "last_read_chapter": info.get("item_show_title", "") if has_progress else "",
                 "last_read_time": prog_ts if has_progress else 0,
-                "read_chapter_idx": prog_idx if has_progress else -1,
+                # 章节 idx 不在此反查(开销大);打开阅读时 fetch_progress 会精确解析
+                "read_chapter_idx": -1,
                 "read_item_id": prog_item_id if has_progress else "0",
             })
         return result
@@ -91,7 +96,12 @@ class ProgressSync:
     # ── 进度 ───────────────────────────────────────────
 
     async def _get_progress_map(self) -> dict[str, dict]:
-        """拉取所有书的云端阅读进度。"""
+        """拉取所有书的云端阅读进度。
+
+        注意:API 返回的 ``index`` 字段不是章节序号(通常为 0),
+        真正的阅读位置在 ``item_id``(章节 ID)里,
+        需用 ``item_id`` 在章节目录中反查序号。
+        """
         r = await self._client.get("/api/reader/book/progress")
         if r.get("code") != 0 or not isinstance(r.get("data"), list):
             return {}
@@ -101,15 +111,37 @@ class ProgressSync:
             if bid:
                 pm[bid] = {
                     "item_id": str(item.get("item_id", "0")),
+                    "read_progress": int(item.get("read_progress", 0) or 0),
                     "index": int(item.get("index", 0) or 0),
                     "read_timestamp": int(item.get("read_timestamp", 0) or 0),
                 }
         return pm
 
     async def fetch_progress(self, book_id: str) -> dict | None:
-        """拉取单本书的云端进度。"""
+        """拉取单本书的云端进度。
+
+        返回 ``{item_id, chapter_idx, read_timestamp}``,其中
+        ``chapter_idx`` 已用 ``item_id`` 在章节目录中反查得到。
+        若反查失败,``chapter_idx`` 为 -1,但 ``item_id`` 仍可用于直接加载。
+        """
         pm = await self._get_progress_map()
-        return pm.get(book_id)
+        prog = pm.get(book_id)
+        if not prog:
+            return None
+        # 用 item_id 反查章节序号
+        chapters = await self._books_api.get_chapters(book_id)
+        chapter_idx = -1
+        item_id = prog.get("item_id", "0")
+        for i, ch in enumerate(chapters):
+            if str(ch.get("chapter_id")) == item_id:
+                chapter_idx = i
+                break
+        return {
+            "item_id": item_id,
+            "chapter_idx": chapter_idx,
+            "read_timestamp": prog.get("read_timestamp", 0),
+            "read_progress": prog.get("read_progress", 0),
+        }
 
     async def report_progress(
         self,

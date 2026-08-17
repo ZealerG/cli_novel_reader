@@ -115,12 +115,12 @@ class ReaderScreen(Screen):
         if not self.chapters:
             self.query_one("#chapter_title", Label).update("⚠ 无章节数据(需登录或检查 Cookie)")
             return
-        # 断点续读:优先云端进度,其次本地缓存
+        # 断点续读:优先云端进度(用 item_id 反查章节序号),其次本地缓存
         idx = -1
         try:
             prog = await self.app.sync.fetch_progress(self.book["book_id"])
-            if prog and int(prog.get("index", -1)) >= 0:
-                idx = int(prog["index"])
+            if prog and prog.get("chapter_idx", -1) >= 0:
+                idx = int(prog["chapter_idx"])
         except Exception:
             pass
         if idx < 0:

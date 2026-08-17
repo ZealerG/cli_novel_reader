@@ -155,7 +155,9 @@ async def main() -> None:
         try:
             prog = await sync.fetch_progress(test_book_for_progress)
             if prog:
-                ok(f"进度拉取成功:item_id={prog.get('item_id')} index={prog.get('index')}")
+                ok(f"进度拉取成功:item_id={prog.get('item_id')} "
+                   f"chapter_idx={prog.get('chapter_idx')} "
+                   f"(第{prog.get('chapter_idx', -1) + 1}章)")
             else:
                 fail("该书无云端进度记录")
         except Exception as e:
@@ -168,10 +170,10 @@ async def main() -> None:
     if test_book_for_progress:
         try:
             before = await sync.fetch_progress(test_book_for_progress)
-            before_idx = before.get("index", 0) if before else 0
+            before_idx = before.get("chapter_idx", -1) if before else -1
             before_ts = before.get("read_timestamp", 0) if before else 0
             chapters = await books_api.get_chapters(test_book_for_progress)
-            if chapters and before_idx < len(chapters):
+            if chapters and before_idx >= 0 and before_idx < len(chapters):
                 ch = chapters[before_idx]
                 ok1 = await sync.report_progress(test_book_for_progress, ch["chapter_id"], before_idx)
                 if ok1:
@@ -180,13 +182,13 @@ async def main() -> None:
                     after_ts = after.get("read_timestamp", 0) if after else 0
                     if after_ts > before_ts:
                         ok(f"进度上报成功:timestamp {before_ts} → {after_ts}")
-                        ok("回环验证通过:写后读 timestamp 已更新")
+                        ok(f"回环验证通过:续读 第{before_idx+1}章 {ch.get('title', '')}")
                     else:
                         fail("回环验证失败", "timestamp 未更新")
                 else:
                     fail("进度上报失败", "API 返回非 0")
             else:
-                print("  \033[33m⏭ 跳过\033[0m  无法获取章节列表做回环")
+                print("  \033[33m⏭ 跳过\033[0m  无法反查章节序号做回环")
         except Exception as e:
             fail("进度回环失败", str(e))
     else:
