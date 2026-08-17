@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cli-novel-reader"
+version = "0.1.0"
+description = "边开发边看小说的命令行伪装阅读器(番茄小说进度同步)"
+requires-python = ">=3.11"
+dependencies = [
+    "textual>=8.0.0",
+    "httpx>=0.28.0",
+]
+
+[project.optional-dependencies]
+# 若需要跑基准项目抽出的 FastAPI 服务(可选)
+server = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+]
+
+[project.scripts]
+cli-novel-reader = "cli_novel_reader.app:main"
+
+[tool.setuptools.packages.find]
+include = ["cli_novel_reader*"]

@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# 运行时数据(含登录态,勿提交)
+user_cookie.json
+cookie.txt
+state.json
+config.json
+.cli-novel-reader/
+
+# IDE
+.vscode/
+.idea/
