@@ -24,3 +24,6 @@ cli-novel-reader = "cli_novel_reader.app:main"
 
 [tool.setuptools.packages.find]
 include = ["cli_novel_reader*"]
+
+[tool.setuptools.package-data]
+cli_novel_reader = ["fanqie/data/*.json"]

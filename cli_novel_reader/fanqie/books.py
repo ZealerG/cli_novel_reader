@@ -1,155 +1,167 @@
-"""番茄小说搜索、章节、正文 API(去路由化,纯函数接口)。"""
+"""番茄小说搜索、章节、正文 API。
+
+正文获取方案(已验证):reader 页面 SSR HTML 内嵌 __INITIAL_STATE__,
+含完整正文(带 PUA 字体混淆),配合 fontMap 解密即可,无需 API 签名。
+"""
 from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+
+import httpx
 
 from cli_novel_reader.fanqie.client import FanqieClient
 
+# fontMap 随项目分发(TRNovel 社区维护,共 362 条 PUA→汉字映射)
+_DEFAULT_FONTMAP_PATH = Path(__file__).parent / "data" / "content_fontmap.json"
+
+_WEB_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0 Safari/537.36"
+)
+
 
 class BooksAPI:
-    """封装番茄小说内容获取 API。"""
+    """封装番茄小说内容获取。
 
-    # 社区 API 作为正文获取的兜底源(可选配置)
-    COMMUNITY_API = "http://101.35.133.34:5000"
+    搜索/目录走官方网页 API(目录无需签名),正文走 reader SSR HTML。
+    """
 
-    def __init__(self, client: FanqieClient, community_api: str = "") -> None:
+    FANQIE_BASE = "https://fanqienovel.com"
+
+    def __init__(self, client: FanqieClient, fontmap_path: Path | None = None) -> None:
         self._client = client
-        self._community_api = community_api or self.COMMUNITY_API
+        self._fontmap_path = fontmap_path or _DEFAULT_FONTMAP_PATH
+        self._fontmap: dict[str, str] = self._load_fontmap()
 
-    # ── 搜索 ───────────────────────────────────────────
+    # ── fontMap ────────────────────────────────────────
 
-    async def search(self, keyword: str, offset: int = 0) -> list[dict]:
-        """搜索小说(按书名/作者)。"""
-        try:
-            r = await self._client.get(
-                f"{self._community_api}/api/search",
-                params={"key": keyword, "tab_type": 3, "offset": offset},
-            )
-            if r.get("code") == 200:
-                raw = r.get("data", {})
-                if isinstance(raw, dict):
-                    tabs = raw.get("search_tabs", [])
-                    books = self._extract_books(tabs)
-                    return books
-        except Exception:
-            pass
-        return []
+    def _load_fontmap(self) -> dict[str, str]:
+        if self._fontmap_path.exists():
+            try:
+                data = json.loads(self._fontmap_path.read_text("utf-8"))
+                return {k.upper(): v for k, v in data.items()}
+            except Exception:
+                pass
+        return {}
 
-    @staticmethod
-    def _extract_books(tabs: list) -> list[dict]:
-        books = []
-        for tab in tabs:
-            if not isinstance(tab, dict):
-                continue
-            items = tab.get("data", [])
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                bd_raw = item.get("book_data", [])
-                bd = bd_raw[0] if isinstance(bd_raw, list) and bd_raw else {}
-                if not isinstance(bd, dict) or not bd.get("book_id"):
-                    continue
-                stat = bd.get("creation_status", "")
-                status_map = {"1": "连载中", "0": "已完结"}
-                books.append({
-                    "book_id": bd["book_id"],
-                    "name": bd.get("book_name", ""),
-                    "author": bd.get("author", ""),
-                    "desc": bd.get("abstract", ""),
-                    "thumb_url": bd.get("thumb_url", bd.get("audio_thumb_uri", "")),
-                    "chapter_count": bd.get("chapter_number", ""),
-                    "score": bd.get("score", ""),
-                    "word_count": bd.get("word_number", 0),
-                    "status": status_map.get(str(stat), ""),
-                    "read_count": bd.get("read_count", 0),
-                })
-        return books
+    def decode_pua(self, text: str) -> str:
+        """将 PUA 私用区字符按 fontMap 还原为正常汉字。"""
+        if not self._fontmap:
+            return text
+        out = []
+        for ch in text:
+            code = f"{ord(ch):X}"
+            out.append(self._fontmap.get(code, ch))
+        return "".join(out)
 
-    # ── 章节列表 ───────────────────────────────────────
+    # ── 章节目录(无需签名) ────────────────────────────
 
     async def get_chapters(self, book_id: str) -> list[dict]:
-        """获取书籍章节目录。"""
+        """获取书籍章节目录(官方目录接口,无需签名)。"""
         try:
             r = await self._client.get(
-                f"{self._community_api}/api/book",
-                params={"book_id": book_id},
+                "/api/reader/directory/detail",
+                params={"bookId": book_id},
             )
-            if r.get("code") == 200:
-                outer = r.get("data", {})
-                inner = outer.get("data", {}) if isinstance(outer, dict) else {}
-                vols = inner.get("chapterListWithVolume", [])
-                result = []
-                for vol in vols:
-                    if isinstance(vol, list):
-                        for ch in vol:
-                            result.append({
-                                "chapter_id": ch.get("itemId", ""),
-                                "title": ch.get("title", ""),
-                                "order": ch.get("realChapterOrder", ""),
-                            })
-                    elif isinstance(vol, dict):
-                        for ch in vol.get("chapterList", []):
-                            result.append({
-                                "chapter_id": ch.get("chapterId", ch.get("itemId", "")),
-                                "title": ch.get("chapterTitle", ch.get("title", "")),
-                            })
-                if result:
-                    return result
-                # fallback: 用 itemIds 列表
-                ids = inner.get("allItemIds", [])
-                return [{"chapter_id": cid, "title": f"第{i+1}章", "order": str(i+1)}
-                        for i, cid in enumerate(ids)]
+            if r.get("code") != 0:
+                return []
+            data = r.get("data", {})
+            vols = data.get("chapterListWithVolume", [])
+            result: list[dict] = []
+            for vol in vols:
+                if isinstance(vol, list):
+                    for ch in vol:
+                        result.append({
+                            "chapter_id": ch.get("itemId", ""),
+                            "title": ch.get("title", ""),
+                            "order": ch.get("realChapterOrder", ""),
+                        })
+                elif isinstance(vol, dict):
+                    for ch in vol.get("chapterList", []):
+                        result.append({
+                            "chapter_id": ch.get("chapterId", ch.get("itemId", "")),
+                            "title": ch.get("chapterTitle", ch.get("title", "")),
+                        })
+            # fallback: 用 allItemIds
+            if not result:
+                ids = data.get("allItemIds", [])
+                result = [{"chapter_id": cid, "title": f"第{i+1}章", "order": str(i + 1)}
+                          for i, cid in enumerate(ids)]
+            return result
         except Exception:
-            pass
-        return []
+            return []
 
-    # ── 正文 ───────────────────────────────────────────
+    # ── 正文(SSR HTML,无需签名) ──────────────────────
 
     async def get_content(self, chapter_id: str) -> dict | None:
-        """获取章节正文。返回 {title, paragraphs, author_speak}。"""
-        try:
-            # 先尝试社区 API 的 raw_full 接口
-            r = await self._client.get(
-                f"{self._community_api}/api/raw_full",
-                params={"item_id": chapter_id},
-            )
-            if r.get("code") == 200:
-                raw = r.get("data", {})
-                content_html = raw.get("content", "")
-                title = raw.get("title", "")
-                paragraphs = self._html_to_paragraphs(content_html)
-                if paragraphs:
-                    return {
-                        "title": title,
-                        "paragraphs": paragraphs,
-                        "author_speak": raw.get("author_speak", ""),
-                    }
-        except Exception:
-            pass
+        """获取章节正文。
 
-        # 兜底:content 接口
+        通过 reader 页面 SSR HTML 提取 __INITIAL_STATE__.chapterData.content,
+        再用 fontMap 解密 PUA 字符。返回 {title, paragraphs}。
+        """
         try:
-            r = await self._client.get(
-                f"{self._community_api}/api/content",
-                params={"tab": "小说", "item_id": chapter_id},
-            )
-            if r.get("code") == 200:
-                text = r.get("data", {}).get("content", "")
-                if text:
-                    return {
-                        "title": "",
-                        "paragraphs": [l for l in text.split("\n") if l.strip()],
-                        "author_speak": "",
-                    }
+            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as c:
+                r = await c.get(
+                    f"{self.FANQIE_BASE}/reader/{chapter_id}",
+                    headers={
+                        "User-Agent": _WEB_UA,
+                        "Referer": f"{self.FANQIE_BASE}/",
+                        "Accept": "text/html",
+                    },
+                )
+            html = r.text
+            state = self._extract_initial_state(html)
+            if not state:
+                return None
+            cd = state.get("reader", {}).get("chapterData", {})
+            content = cd.get("content", "")
+            title = cd.get("title", "")
+            if not content:
+                return None
+            paragraphs = self._html_to_paragraphs(content)
+            # 解密 PUA
+            paragraphs = [self.decode_pua(p) for p in paragraphs]
+            return {
+                "title": title,
+                "paragraphs": paragraphs,
+                "author_speak": "",
+            }
         except Exception:
-            pass
-        return None
+            return None
 
     @staticmethod
-    def _html_to_paragraphs(html: str) -> list[str]:
-        import re
+    def _extract_initial_state(html: str) -> dict | None:
+        """从 reader 页 HTML 提取 window.__INITIAL_STATE__ JSON。"""
+        m = re.search(r"window\.__INITIAL_STATE__\s*=\s*(\{.*?\})\s*;", html, re.DOTALL)
+        if not m:
+            return None
+        try:
+            return json.loads(m.group(1))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _html_to_paragraphs(content: str) -> list[str]:
+        """从 chapterData.content 提取纯文本段落(去 HTML 标签、跳图片)。"""
         paragraphs = []
-        parts = re.split(r"</?p[^>]*>", html)
-        for p in parts:
-            p = p.strip()
-            if p and not p.startswith("<") and not p.startswith("</"):
-                paragraphs.append(p)
+        for p in re.findall(r"<p[^>]*>(.*?)</p>", content, re.DOTALL):
+            if "<img" in p:
+                continue
+            # 去 HTML 实体和标签
+            text = re.sub(r"<[^>]+>", "", p).strip()
+            if text:
+                paragraphs.append(text)
         return paragraphs
+
+    # ── 搜索(需签名,暂不支持) ────────────────────────
+
+    async def search(self, keyword: str) -> list[dict]:
+        """搜索小说。
+
+        番茄网页搜索 API 需要 a_bogus 签名,匿名请求会被风控拦截返回空 body。
+        暂不支持,建议在官方 App/网页搜索后用 book_id 直接加入书架。
+        """
+        return []
