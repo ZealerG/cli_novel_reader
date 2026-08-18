@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+from rich.text import Text
 
 from cli_novel_reader.ui.disguises import (
     available_disguises,
@@ -14,19 +15,69 @@ SAMPLE = "第一章 开端\n\n他站在窗前,看着远方的城市。\n夜色�
 
 def test_all_disguises_registered() -> None:
     names = list_disguises()
-    assert "vim" in names
-    assert "ide" in names
-    assert "logtail" in names
+    for required in ("vim", "ide", "logtail", "claude", "codex"):
+        assert required in names, f"缺少主题 {required}"
 
 
 def test_each_disguise_renders_content() -> None:
     for name in list_disguises():
         d = get_disguise(name)
         out = d.render(SAMPLE)
-        assert isinstance(out, str)
-        assert len(out) > 0
+        assert isinstance(out, Text), f"{name}.render 应返回 Rich Text"
+        assert len(out.plain) > 0
         # 伪装渲染必须包含原文部分内容(折行后应保留全部字符)
-        assert "他站在窗前" in out or "第一章" in out
+        assert "他站在窗前" in out.plain or "第一章" in out.plain
+
+
+def test_frame_wraps_shown_content() -> None:
+    """frame() 必须保留已输出的小说内容。"""
+    for name in list_disguises():
+        d = get_disguise(name)
+        body = d.render(SAMPLE)
+        frame = d.frame(
+            body,
+            tick=3,
+            paused=False,
+            done=False,
+            shown_count=1,
+            total_count=10,
+            chapter_idx=0,
+            chapter_total=100,
+        )
+        assert isinstance(frame, Text)
+        assert "他站在窗前" in frame.plain or "第一章" in frame.plain
+        # frame 应比裸正文更长(chrome/filler 附加)
+        assert len(frame.plain) >= len(body.plain)
+
+
+def test_frame_paused_and_done_states() -> None:
+    for name in list_disguises():
+        d = get_disguise(name)
+        body = d.render(SAMPLE)
+        paused = d.frame(body, paused=True, done=False)
+        done = d.frame(body, paused=False, done=True)
+        assert isinstance(paused, Text)
+        assert isinstance(done, Text)
+
+
+def test_theme_chrome_lines() -> None:
+    """title/footer 应返回字符串,且不泄露阅读器身份。"""
+    for name in list_disguises():
+        d = get_disguise(name)
+        title = d.title_line(book_name="测试书", chapter_title="第一章")
+        footer = d.footer(
+            paused=False,
+            streaming=True,
+            tick=1,
+            shown_count=1,
+            total_count=10,
+            chapter_idx=0,
+            chapter_total=100,
+        )
+        assert isinstance(title, str)
+        assert isinstance(footer, str)
+        assert "伪装" not in title + footer
+        assert "阅读" not in title + footer
 
 
 def test_available_disguises_has_descriptions() -> None:

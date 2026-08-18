@@ -8,7 +8,8 @@ from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Input, Label, ListItem, ListView, Static
 
 from cli_novel_reader.fanqie.books import BooksAPI
-from cli_novel_reader.ui.disguises import get_disguise, list_disguises
+from cli_novel_reader.ui.disguises import Disguise, get_disguise, list_disguises
+from rich.text import Text
 
 
 # ── 书架屏 ─────────────────────────────────────────────
@@ -122,8 +123,10 @@ class ReaderScreen(Screen):
         # 流式输出状态
         self._streaming = False
         self._paused = False
-        self._stream_lines: list[str] = []
+        self._stream_chunks: list[Text] = []
         self._stream_idx = 0
+        self._tick = 0
+        self._disguise: Disguise | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -165,9 +168,12 @@ class ReaderScreen(Screen):
         self.chapter_idx = idx
         ch = self.chapters[idx]
         title = ch.get("title") or f"第{idx+1}章"
-        self.query_one("#chapter_title", Label).update(
-            f"{self.book.get('name', '')} · {title}"
-        )
+        if self.disguised:
+            self._set_title_for_disguise()
+        else:
+            self.query_one("#chapter_title", Label).update(
+                f"{self.book.get('name', '')} · {title}"
+            )
         self.query_one("#content", Static).update("加载中...")
         self._update_status()
 
@@ -211,54 +217,57 @@ class ReaderScreen(Screen):
     # ── 流式输出(伪装模式) ────────────────────────────
 
     def _start_stream(self) -> None:
-        """启动流式输出:把正文拆成行,逐行追加,自动滚动。
-
-        伪装成类似 tail -f 的实时输出效果。
-        """
+        """伪装模式:按段落流式输出,每帧包进主题工作画面。"""
         paragraphs = (self.content or {}).get("paragraphs", [])
         if not paragraphs:
             self.query_one("#content", Static).update("(空章节)")
             return
-        # 预渲染所有段落(伪装处理后)
-        disguise = get_disguise(self.app.disguise_name)
-        self._stream_lines = []
+        ch = self.chapters[self.chapter_idx] if self.chapters else {}
+        self._disguise = get_disguise(
+            self.app.disguise_name,
+            context={
+                "chapter_id": ch.get("chapter_id", ""),
+                "chapter_idx": self.chapter_idx,
+                "book_name": self.book.get("name", ""),
+            },
+        )
+        # 预渲染所有段落
+        self._stream_chunks = []
         for p in paragraphs:
-            disguised = disguise.render(p)
-            for line in disguised.splitlines():
-                if line.strip():
-                    self._stream_lines.append(line)
+            chunk = self._disguise.render(p)
+            self._stream_chunks.append(chunk if isinstance(chunk, Text) else Text(str(chunk)))
         self._stream_idx = 0
+        self._tick = 0
         self._streaming = True
         self._paused = False
+        self._set_chrome(True)
+        self._set_title_for_disguise()
         self.query_one("#content", Static).update(" ")
         self.run_worker(self._stream_worker(), exclusive=True)
 
     async def _stream_worker(self) -> None:
-        """逐行追加内容,模拟实时输出。输出完自动翻下一章。"""
+        """逐段追加 + 每帧重渲主题画面。输出完自动翻下一章。"""
         import asyncio
         content = self.query_one("#content", Static)
         scroll = self.query_one("#reader_scroll", VerticalScroll)
-        buffer: list[str] = []
-        # 根据总行数动态调整:保证总时长 8-15 秒
-        total = len(self._stream_lines)
-        delay = max(0.02, min(0.08, 10.0 / max(total, 1)))
-        batch_size = max(1, total // 60)  # 每批输出的行数
+        total = len(self._stream_chunks)
+        delay = max(0.08, min(0.15, 12.0 / max(total, 1)))
+        batch_size = max(1, total // 80)
 
         while self._streaming and self._stream_idx < total:
             if self._paused:
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.12)
                 continue
-            # 批量追加
-            end = min(self._stream_idx + batch_size, total)
-            for i in range(self._stream_idx, end):
-                buffer.append(self._stream_lines[i])
-            self._stream_idx = end
-            content.update("\n".join(buffer))
+            self._stream_idx = min(self._stream_idx + batch_size, total)
+            self._tick += 1
+            self._render_frame()
             scroll.scroll_end(animate=False)
             self._update_status()
             await asyncio.sleep(delay)
 
         self._streaming = False
+        self._tick += 1
+        self._render_frame(done=True)
         self._update_status()
 
         # 输出完自动翻下一章(如果不在最后一章且用户没暂停)
@@ -267,6 +276,46 @@ class ReaderScreen(Screen):
             if not self._paused:
                 await self.load_chapter(self.chapter_idx + 1)
 
+    def _render_frame(self, *, done: bool = False) -> None:
+        """把已输出的正文包进主题工作画面。"""
+        if self._disguise is None:
+            return
+        shown = Text("\n").join(self._stream_chunks[: self._stream_idx])
+        frame = self._disguise.frame(
+            shown,
+            tick=self._tick,
+            paused=self._paused,
+            done=done,
+            shown_count=self._stream_idx,
+            total_count=len(self._stream_chunks),
+            chapter_idx=self.chapter_idx,
+            chapter_total=len(self.chapters),
+        )
+        if frame is None:
+            frame = shown
+        self.query_one("#content", Static).update(frame)
+
+    def _set_chrome(self, disguised: bool) -> None:
+        """伪装模式隐藏 Header/Footer(快捷键说明不能曝光)。"""
+        self.query_one(Header).display = not disguised
+        self.query_one(Footer).display = not disguised
+
+    def _set_title_for_disguise(self) -> None:
+        """顶栏换成主题化文案。"""
+        ch = self.chapters[self.chapter_idx] if self.chapters else {}
+        title = ch.get("title") or f"第{self.chapter_idx + 1}章"
+        line = ""
+        if self._disguise is not None:
+            line = self._disguise.title_line(
+                book_name=self.book.get("name", ""),
+                chapter_title=title,
+                chapter_idx=self.chapter_idx,
+                chapter_total=len(self.chapters),
+            )
+        if not line:
+            line = f"{self.book.get('name', '')} · {title}"
+        self.query_one("#chapter_title", Label).update(Text(line))
+
     def action_toggle_disguise(self) -> None:
         self.disguised = not self.disguised
         self._streaming = False  # 停止流式
@@ -274,7 +323,14 @@ class ReaderScreen(Screen):
         if self.disguised:
             self._start_stream()
         else:
+            self._disguise = None
+            self._set_chrome(False)
             self.render_content()
+            ch = self.chapters[self.chapter_idx] if self.chapters else {}
+            title = ch.get("title") or f"第{self.chapter_idx + 1}章"
+            self.query_one("#chapter_title", Label).update(
+                f"{self.book.get('name', '')} · {title}"
+            )
             scroll = self.query_one("#reader_scroll", VerticalScroll)
             scroll.scroll_home(animate=False)
         self._update_status()
@@ -283,24 +339,33 @@ class ReaderScreen(Screen):
         """流式模式下空格暂停/继续。"""
         if self.disguised and event.key == "space":
             self._paused = not self._paused
+            self._render_frame()
             self._update_status()
             event.prevent_default()
 
     def _update_status(self) -> None:
-        """更新底部状态栏:章节进度 + 伪装状态。"""
+        """底部状态栏:正常模式=章节进度;伪装模式=主题化 footer。"""
+        if self.disguised:
+            label = self.query_one("#reader_status", Label)
+            if self._disguise is not None:
+                text = self._disguise.footer(
+                    paused=self._paused,
+                    streaming=self._streaming,
+                    tick=self._tick,
+                    shown_count=self._stream_idx,
+                    total_count=len(self._stream_chunks),
+                    chapter_idx=self.chapter_idx,
+                    chapter_total=len(self.chapters),
+                )
+                label.update(Text(text))
+            else:
+                label.update(" ")
+            return
         total = len(self.chapters)
         cur = self.chapter_idx + 1 if total else 0
-        mode = f"[{self.app.disguise_name}]" if self.disguised else "[正常]"
         loading = " ⏳加载中" if self._loading else ""
-        stream_state = ""
-        if self.disguised:
-            if self._streaming:
-                stream_state = " ⏸已暂停" if self._paused else " ▶流式输出中"
-                stream_state += f" {self._stream_idx}/{len(self._stream_lines)}"
-            else:
-                stream_state = " ✓已输出完"
         self.query_one("#reader_status", Label).update(
-            f"  {mode}{stream_state}{loading}  第 {cur}/{total} 章  "
+            f"  第 {cur}/{total} 章  {loading}  "
             f"n下一章 p上一章 d伪装 c目录 q书架"
         )
 

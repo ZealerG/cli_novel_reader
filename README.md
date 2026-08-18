@@ -1,7 +1,7 @@
 # 番茄小说 CLI 伪装阅读器
 
-在终端里"边开发边读小说"——阅读界面伪装成 Vim / IDE / 日志终端,
-同时通过番茄官方网页 API 与手机 App 双向同步阅读进度。
+在终端里"边开发边读小说"——阅读界面伪装成开发会话(Claude Code / Codex /
+Vim / IDE / 日志终端),同时通过番茄官方网页 API 与手机 App 双向同步阅读进度。
 
 > 仅供个人学习与技术研究。内容版权归番茄小说及原作者所有。
 > 本项目不提供、不存储任何小说内容,正文通过你自己的登录态获取。
@@ -37,13 +37,32 @@ java -jar target/unidbg-boot-server-*.jar
 
 ## 配置
 
-在项目根目录放置 `.env`(参考 `.env.example`):
+启动后 `Ctrl+S` 打开设置页粘贴 Cookie,或直接写入
+`~/.cli-novel-reader/cookie.txt`。可选环境变量:
 
 ```bash
-FANQIE_COOKIE="粘贴番茄小说网页 Cookie"
+CLI_NOVEL_DISGUISE=vim      # claude / codex / vim / ide / logtail
 UNIDBG_BASE="http://127.0.0.1:8099"   # unidbg 服务地址
-FANQIE_DISGUISE="vim"                 # vim / ide / logtail
 ```
+
+## 伪装主题
+
+伪装模式会把正文包进一个"正在工作"的画面,而不是把小说当屏幕主角:
+
+| 主题 | 画面 | 小说伪装方式 |
+|---|---|---|
+| `claude` | Claude Code 会话(tool call / diff / token 计数) | `cat docs.md` 输出块内的暗色行 |
+| `codex` | OpenAI Codex CLI(Working spinner / turn / ctx 进度条) | 整理文档任务的暗色输出行 |
+| `vim` | 伪 Vim(行号 gutter / ~ 空行 / `-- INSERT --`) | 正在编辑的 notes.md 正文 |
+| `ide` | 伪 IDE(文件树 + md 预览 + 底部终端面板) | `>` 引用块样式的暗色预览 |
+| `logtail` | 伪生产日志(tail -f 结构化日志) | `DEBUG story.engine msg="..."` 暗色行 |
+
+设计原则(参考同类项目如山口丢本 CodeNovel / tReader / sneaky-reader):
+
+1. **小说行用暗色(dim)**,四周 chrome 才有彩色焦点
+2. 正文周围穿插真实感的 filler(构建日志 / git / pytest / 指标)
+3. 伪装时自动隐藏 Textual 自带 Header/Footer,快捷键说明不会曝光
+4. 顶栏、底栏都换成主题化文案(token 计数、`-- INSERT --`、branch 状态)
 
 ## 快捷键
 
