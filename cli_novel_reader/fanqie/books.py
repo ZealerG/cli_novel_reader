@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+import os
 
 import httpx
 
@@ -96,7 +97,7 @@ class BooksAPI:
 
     # ── 正文(unidbg 服务优先,SSR 兜底) ────────────────
 
-    UNIDBG_BASE = "http://127.0.0.1:8099"
+    UNIDBG_BASE = os.environ.get("UNIDBG_BASE", "http://127.0.0.1:8099")
 
     async def get_content(self, chapter_id: str, book_id: str = "") -> dict | None:
         """获取章节正文。
