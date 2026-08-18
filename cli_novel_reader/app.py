@@ -17,6 +17,7 @@ class NovelApp(App):
     """
 
     TITLE = "cli-novel-reader"
+    CSS_PATH = "ui/app.tcss"
 
     BINDINGS = [
         Binding("ctrl+s", "toggle_settings", "书架/设置"),
@@ -31,6 +32,7 @@ class NovelApp(App):
         self.store = LocalStore()
         self.disguise_name: str = DEFAULT_DISGUISE
         self.current_book: dict | None = None
+        self._chapter_jump_target: int | None = None
 
     def compose(self) -> ComposeResult:
         yield from ()

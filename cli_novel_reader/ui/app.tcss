@@ -1,0 +1,57 @@
+/* 阅读器样式 */
+
+/* 章节标题 */
+#chapter_title {
+    padding: 0 1;
+    background: $boost;
+    color: $text;
+    text-style: bold;
+}
+
+/* 正文内容区 */
+#content {
+    padding: 1 2;
+    color: $text;
+}
+
+/* 阅读器滚动区 */
+#reader_scroll {
+    height: 1fr;
+}
+
+/* 底部状态栏 */
+#reader_status {
+    padding: 0 1;
+    background: $panel;
+    color: $text-muted;
+    text-style: dim;
+}
+
+/* 章节目录 */
+#ch_title {
+    padding: 0 1;
+    background: $boost;
+    color: $text;
+}
+
+#chapter_list {
+    height: 1fr;
+}
+
+/* 书架 */
+#books {
+    height: 1fr;
+}
+
+/* 设置页分区标题 */
+.section {
+    padding: 1 0 0 0;
+    text-style: bold;
+    color: $accent;
+}
+
+.hint {
+    color: $text-muted;
+    text-style: italic;
+    padding: 0 0 0 1;
+}

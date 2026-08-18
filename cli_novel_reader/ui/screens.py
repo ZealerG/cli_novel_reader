@@ -39,7 +39,7 @@ class BookshelfScreen(Screen):
 
     async def _refresh(self) -> None:
         if not self.app.client.logged_in:
-            self.query_one("#status", Label).update("未登录:按 s 进入设置粘贴 Cookie")
+            self.query_one("#status", Label).update("未登录:Ctrl+S 进入设置粘贴 Cookie")
             return
         if not self.books:
             await self._load_bookshelf()
@@ -86,13 +86,23 @@ class BookshelfScreen(Screen):
 # ── 阅读屏 ─────────────────────────────────────────────
 
 class ReaderScreen(Screen):
-    """阅读视图:正常模式 + 伪装模式,按 d 切换。"""
+    """阅读视图:正常模式 + 伪装模式,按 d 切换。
+
+    快捷键:
+    - j/↓/space  滚动下一行(正常模式)
+    - n         下一章
+    - p         上一章
+    - d         切换伪装/正常视图
+    - c         章节目录跳转
+    - q         返回书架
+    """
 
     BINDINGS = [
         Binding("n", "next_chapter", "下一章"),
         Binding("p", "prev_chapter", "上一章"),
-        Binding("d", "toggle_disguise", "伪装切换"),
-        Binding("q", "quit_reader", "返回书架"),
+        Binding("d", "toggle_disguise", "伪装"),
+        Binding("c", "show_chapters", "目录"),
+        Binding("q", "quit_reader", "书架"),
     ]
 
     def __init__(self, book: dict) -> None:
@@ -102,18 +112,25 @@ class ReaderScreen(Screen):
         self.chapter_idx = 0
         self.disguised = False
         self.content: dict | None = None
+        self._loading = False
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield Label("加载章节中...", id="chapter_title")
-        with VerticalScroll():
-            yield Static("", id="content")
+        with Vertical():
+            yield Label("加载中...", id="chapter_title")
+            with VerticalScroll(id="reader_scroll"):
+                yield Static(" ", id="content")
+            yield Label(" ", id="reader_status")
         yield Footer()
 
     async def on_mount(self) -> None:
+        self._update_status()
         self.chapters = await self.app.books_api.get_chapters(self.book["book_id"])
         if not self.chapters:
-            self.query_one("#chapter_title", Label).update("⚠ 无章节数据(需登录或检查 Cookie)")
+            self.query_one("#chapter_title", Label).update("⚠ 无法获取章节数据")
+            self.query_one("#content", Static).update(
+                "请检查 Cookie 是否有效。\n按 q 返回书架。"
+            )
             return
         # 断点续读:优先云端进度(用 item_id 反查章节序号),其次本地缓存
         idx = -1
@@ -130,42 +147,146 @@ class ReaderScreen(Screen):
         await self.load_chapter(max(idx, 0))
 
     async def load_chapter(self, idx: int) -> None:
-        if not (0 <= idx < len(self.chapters)):
+        if self._loading or not (0 <= idx < len(self.chapters)):
             return
+        self._loading = True
         self.chapter_idx = idx
         ch = self.chapters[idx]
         title = ch.get("title") or f"第{idx+1}章"
-        self.query_one("#chapter_title", Label).update(f"{self.book.get('name', '')} · {title}")
-        self.content = await self.app.books_api.get_content(ch["chapter_id"])
-        self._render()
+        self.query_one("#chapter_title", Label).update(
+            f"{self.book.get('name', '')} · {title}"
+        )
+        self.query_one("#content", Static).update("加载中...")
+        self._update_status()
+
+        try:
+            self.content = await self.app.books_api.get_content(ch["chapter_id"])
+        except Exception:
+            self.content = None
+            self.query_one("#content", Static).update(
+                "⚠ 章节加载失败,按 r 重试或 n 跳下一章"
+            )
+            self._loading = False
+            self._update_status()
+            return
+
+        self.render_content()
+        # 滚动到顶部
+        scroll = self.query_one("#reader_scroll", VerticalScroll)
+        scroll.scroll_home(animate=False)
         # 本地 + 云端进度
         self.app.store.save_progress(self.book["book_id"], idx)
         try:
-            await self.app.sync.report_progress(self.book["book_id"], ch["chapter_id"], idx)
+            await self.app.sync.report_progress(
+                self.book["book_id"], ch["chapter_id"], idx
+            )
         except Exception:
             pass
+        self._loading = False
+        self._update_status()
 
-    def _render(self) -> None:
+    def render_content(self) -> None:
         paragraphs = (self.content or {}).get("paragraphs", [])
+        if not paragraphs:
+            self.query_one("#content", Static).update("(空章节)")
+            return
         text = "\n\n".join(paragraphs)
         if self.disguised:
             disguise = get_disguise(self.app.disguise_name)
             text = disguise.render(text)
         self.query_one("#content", Static).update(text)
 
+    def _update_status(self) -> None:
+        """更新底部状态栏:章节进度 + 伪装状态。"""
+        total = len(self.chapters)
+        cur = self.chapter_idx + 1 if total else 0
+        mode = f"[{self.app.disguise_name}]" if self.disguised else "[正常]"
+        loading = " ⏳加载中" if self._loading else ""
+        self.query_one("#reader_status", Label).update(
+            f"  {mode}  第 {cur}/{total} 章{loading}  "
+            f"n下一章 p上一章 d伪装 c目录 q书架"
+        )
+
     def action_next_chapter(self) -> None:
+        if self._loading:
+            return
         if self.chapter_idx + 1 < len(self.chapters):
             self.run_worker(self.load_chapter(self.chapter_idx + 1), exclusive=True)
+        else:
+            self.query_one("#reader_status", Label).update(
+                "  已到最后一章"
+            )
 
     def action_prev_chapter(self) -> None:
+        if self._loading:
+            return
         if self.chapter_idx - 1 >= 0:
             self.run_worker(self.load_chapter(self.chapter_idx - 1), exclusive=True)
+        else:
+            self.query_one("#reader_status", Label).update(
+                "  已到第一章"
+            )
 
     def action_toggle_disguise(self) -> None:
         self.disguised = not self.disguised
-        self._render()
+        self.render_content()
+        self._update_status()
+
+    def action_show_chapters(self) -> None:
+        """推入章节目录屏。"""
+        if not self.chapters:
+            return
+        self.app.push_screen(ChapterListScreen(self.chapters, self.chapter_idx))
 
     def action_quit_reader(self) -> None:
+        self.app.pop_screen()
+
+    async def on_resume(self) -> None:
+        """从章节目录屏返回后,若选了新章节则跳转。"""
+        target = getattr(self.app, "_chapter_jump_target", None)
+        if target is not None and 0 <= target < len(self.chapters) and target != self.chapter_idx:
+            self.app._chapter_jump_target = None
+            await self.load_chapter(target)
+
+
+# ── 章节目录屏 ─────────────────────────────────────────
+
+class ChapterListScreen(Screen):
+    """章节目录跳转屏。"""
+
+    BINDINGS = [
+        Binding("escape", "back", "返回"),
+        Binding("q", "back", "返回"),
+    ]
+
+    def __init__(self, chapters: list[dict], current_idx: int) -> None:
+        super().__init__()
+        self.chapters = chapters
+        self.current_idx = current_idx
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        yield Label(f"共 {len(self.chapters)} 章(当前第 {self.current_idx + 1} 章)", id="ch_title")
+        yield ListView(id="chapter_list")
+        yield Footer()
+
+    async def on_mount(self) -> None:
+        lv = self.query_one("#chapter_list", ListView)
+        for i, ch in enumerate(self.chapters):
+            marker = "▶" if i == self.current_idx else " "
+            title = ch.get("title") or f"第{i+1}章"
+            lv.append(ListItem(Label(f"{marker} {title}")))
+        # 滚动到当前章节
+        if self.current_idx < len(self.chapters):
+            lv.index = self.current_idx
+
+    def action_back(self) -> None:
+        self.app.pop_screen()
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        idx = event.list_view.index
+        if idx is not None and 0 <= idx < len(self.chapters):
+            self.app._chapter_jump_target = idx
         self.app.pop_screen()
 
 
