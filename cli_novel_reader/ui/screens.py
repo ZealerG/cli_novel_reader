@@ -211,20 +211,22 @@ class ReaderScreen(Screen):
     # ── 流式输出(伪装模式) ────────────────────────────
 
     def _start_stream(self) -> None:
-        """启动流式输出:把正文拆成行,逐行追加,自动滚动。"""
+        """启动流式输出:把正文拆成行,逐行追加,自动滚动。
+
+        伪装成类似 tail -f 的实时输出效果。
+        """
         paragraphs = (self.content or {}).get("paragraphs", [])
         if not paragraphs:
             self.query_one("#content", Static).update("(空章节)")
             return
-        # 拆成单行列表
+        # 预渲染所有段落(伪装处理后)
         disguise = get_disguise(self.app.disguise_name)
-        all_lines: list[str] = []
+        self._stream_lines = []
         for p in paragraphs:
             disguised = disguise.render(p)
             for line in disguised.splitlines():
                 if line.strip():
-                    all_lines.append(line)
-        self._stream_lines = all_lines
+                    self._stream_lines.append(line)
         self._stream_idx = 0
         self._streaming = True
         self._paused = False
@@ -232,32 +234,43 @@ class ReaderScreen(Screen):
         self.run_worker(self._stream_worker(), exclusive=True)
 
     async def _stream_worker(self) -> None:
-        """逐行追加内容,模拟实时输出。"""
-        from textual.widgets import Static as _Static
+        """逐行追加内容,模拟实时输出。输出完自动翻下一章。"""
         import asyncio
-        content = self.query_one("#content", _Static)
+        content = self.query_one("#content", Static)
         scroll = self.query_one("#reader_scroll", VerticalScroll)
         buffer: list[str] = []
-        delay = 0.15  # 每行间隔(秒)
-        while self._streaming and self._stream_idx < len(self._stream_lines):
+        # 根据总行数动态调整:保证总时长 8-15 秒
+        total = len(self._stream_lines)
+        delay = max(0.02, min(0.08, 10.0 / max(total, 1)))
+        batch_size = max(1, total // 60)  # 每批输出的行数
+
+        while self._streaming and self._stream_idx < total:
             if self._paused:
                 await asyncio.sleep(0.1)
                 continue
-            line = self._stream_lines[self._stream_idx]
-            buffer.append(line)
-            self._stream_idx += 1
-            # 追加渲染(保留之前的行)
+            # 批量追加
+            end = min(self._stream_idx + batch_size, total)
+            for i in range(self._stream_idx, end):
+                buffer.append(self._stream_lines[i])
+            self._stream_idx = end
             content.update("\n".join(buffer))
-            # 自动滚到最底
             scroll.scroll_end(animate=False)
             self._update_status()
             await asyncio.sleep(delay)
+
         self._streaming = False
         self._update_status()
+
+        # 输出完自动翻下一章(如果不在最后一章且用户没暂停)
+        if self.chapter_idx + 1 < len(self.chapters):
+            await asyncio.sleep(1.5)
+            if not self._paused:
+                await self.load_chapter(self.chapter_idx + 1)
 
     def action_toggle_disguise(self) -> None:
         self.disguised = not self.disguised
         self._streaming = False  # 停止流式
+        self._paused = False
         if self.disguised:
             self._start_stream()
         else:
