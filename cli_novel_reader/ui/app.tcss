@@ -8,15 +8,18 @@
     text-style: bold;
 }
 
-/* 正文内容区 */
+/* 正文内容区:宽度填满,高度自适应 */
 #content {
     padding: 1 2;
     color: $text;
+    width: 1fr;
+    min-height: 100%;
 }
 
-/* 阅读器滚动区 */
+/* 阅读器滚动区:占满剩余空间 */
 #reader_scroll {
     height: 1fr;
+    overflow-y: auto;
 }
 
 /* 底部状态栏 */

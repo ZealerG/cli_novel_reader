@@ -94,14 +94,49 @@ class BooksAPI:
         except Exception:
             return []
 
-    # ── 正文(SSR HTML,无需签名) ──────────────────────
+    # ── 正文(unidbg 服务优先,SSR 兜底) ────────────────
 
-    async def get_content(self, chapter_id: str) -> dict | None:
+    UNIDBG_BASE = "http://127.0.0.1:8099"
+
+    async def get_content(self, chapter_id: str, book_id: str = "") -> dict | None:
         """获取章节正文。
 
-        通过 reader 页面 SSR HTML 提取 __INITIAL_STATE__.chapterData.content,
-        再用 fontMap 解密 PUA 字符。返回 {title, paragraphs}。
+        优先走 unidbg 服务(完整内容,需签名),失败则回退到
+        reader 页 SSR HTML(仅前几章完整,后续只有试读片段)。
+        返回 {title, paragraphs}。
         """
+        # 1. 尝试 unidbg 服务(完整章节)
+        if book_id:
+            result = await self._get_content_unidbg(book_id, chapter_id)
+            if result:
+                return result
+        # 2. 回退:SSR HTML + fontMap 解密
+        return await self._get_content_ssr(chapter_id)
+
+    async def _get_content_unidbg(self, book_id: str, chapter_id: str) -> dict | None:
+        """通过 unidbg 服务获取完整章节内容(带 App 签名)。"""
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as c:
+                r = await c.get(
+                    f"{self.UNIDBG_BASE}/api/fqnovel/chapter/{book_id}/{chapter_id}"
+                )
+            data = r.json()
+            if data.get("code") != 0:
+                return None
+            d = data.get("data", {})
+            txt = d.get("txtContent", "")
+            if not txt:
+                return None
+            paragraphs = [p.strip() for p in txt.splitlines() if p.strip()]
+            return {
+                "title": d.get("title", ""),
+                "paragraphs": paragraphs,
+            }
+        except Exception:
+            return None
+
+    async def _get_content_ssr(self, chapter_id: str) -> dict | None:
+        """通过 reader 页 SSR HTML 获取正文(兜底,仅前几章完整)。"""
         try:
             async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as c:
                 r = await c.get(
@@ -122,12 +157,10 @@ class BooksAPI:
             if not content:
                 return None
             paragraphs = self._html_to_paragraphs(content)
-            # 解密 PUA
             paragraphs = [self.decode_pua(p) for p in paragraphs]
             return {
                 "title": title,
                 "paragraphs": paragraphs,
-                "author_speak": "",
             }
         except Exception:
             return None

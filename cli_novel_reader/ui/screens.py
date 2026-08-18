@@ -86,10 +86,16 @@ class BookshelfScreen(Screen):
 # ── 阅读屏 ─────────────────────────────────────────────
 
 class ReaderScreen(Screen):
-    """阅读视图:正常模式 + 伪装模式,按 d 切换。
+    """阅读视图:正常模式 + 伪装流式模式,按 d 切换。
+
+    正常模式:完整正文,可上下滚动阅读。
+    伪装模式:正文逐行流式输出(像 tail -f 日志),自动滚动,
+    看起来像程序在实时输出日志/构建信息。
 
     快捷键:
-    - j/↓/space  滚动下一行(正常模式)
+    - space     暂停/继续流式输出(伪装模式)
+    - j/↓       向下滚
+    - k/↑       向上滚
     - n         下一章
     - p         上一章
     - d         切换伪装/正常视图
@@ -113,6 +119,11 @@ class ReaderScreen(Screen):
         self.disguised = False
         self.content: dict | None = None
         self._loading = False
+        # 流式输出状态
+        self._streaming = False
+        self._paused = False
+        self._stream_lines: list[str] = []
+        self._stream_idx = 0
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -150,6 +161,7 @@ class ReaderScreen(Screen):
         if self._loading or not (0 <= idx < len(self.chapters)):
             return
         self._loading = True
+        self._streaming = False
         self.chapter_idx = idx
         ch = self.chapters[idx]
         title = ch.get("title") or f"第{idx+1}章"
@@ -160,20 +172,22 @@ class ReaderScreen(Screen):
         self._update_status()
 
         try:
-            self.content = await self.app.books_api.get_content(ch["chapter_id"])
+            self.content = await self.app.books_api.get_content(ch["chapter_id"], self.book["book_id"])
         except Exception:
             self.content = None
             self.query_one("#content", Static).update(
-                "⚠ 章节加载失败,按 r 重试或 n 跳下一章"
+                "⚠ 章节加载失败,按 n 跳下一章"
             )
             self._loading = False
             self._update_status()
             return
 
-        self.render_content()
-        # 滚动到顶部
-        scroll = self.query_one("#reader_scroll", VerticalScroll)
-        scroll.scroll_home(animate=False)
+        if self.disguised:
+            self._start_stream()
+        else:
+            self.render_content()
+            scroll = self.query_one("#reader_scroll", VerticalScroll)
+            scroll.scroll_home(animate=False)
         # 本地 + 云端进度
         self.app.store.save_progress(self.book["book_id"], idx)
         try:
@@ -186,15 +200,78 @@ class ReaderScreen(Screen):
         self._update_status()
 
     def render_content(self) -> None:
+        """正常模式:一次性渲染完整正文。"""
         paragraphs = (self.content or {}).get("paragraphs", [])
         if not paragraphs:
             self.query_one("#content", Static).update("(空章节)")
             return
         text = "\n\n".join(paragraphs)
-        if self.disguised:
-            disguise = get_disguise(self.app.disguise_name)
-            text = disguise.render(text)
         self.query_one("#content", Static).update(text)
+
+    # ── 流式输出(伪装模式) ────────────────────────────
+
+    def _start_stream(self) -> None:
+        """启动流式输出:把正文拆成行,逐行追加,自动滚动。"""
+        paragraphs = (self.content or {}).get("paragraphs", [])
+        if not paragraphs:
+            self.query_one("#content", Static).update("(空章节)")
+            return
+        # 拆成单行列表
+        disguise = get_disguise(self.app.disguise_name)
+        all_lines: list[str] = []
+        for p in paragraphs:
+            disguised = disguise.render(p)
+            for line in disguised.splitlines():
+                if line.strip():
+                    all_lines.append(line)
+        self._stream_lines = all_lines
+        self._stream_idx = 0
+        self._streaming = True
+        self._paused = False
+        self.query_one("#content", Static).update(" ")
+        self.run_worker(self._stream_worker(), exclusive=True)
+
+    async def _stream_worker(self) -> None:
+        """逐行追加内容,模拟实时输出。"""
+        from textual.widgets import Static as _Static
+        import asyncio
+        content = self.query_one("#content", _Static)
+        scroll = self.query_one("#reader_scroll", VerticalScroll)
+        buffer: list[str] = []
+        delay = 0.15  # 每行间隔(秒)
+        while self._streaming and self._stream_idx < len(self._stream_lines):
+            if self._paused:
+                await asyncio.sleep(0.1)
+                continue
+            line = self._stream_lines[self._stream_idx]
+            buffer.append(line)
+            self._stream_idx += 1
+            # 追加渲染(保留之前的行)
+            content.update("\n".join(buffer))
+            # 自动滚到最底
+            scroll.scroll_end(animate=False)
+            self._update_status()
+            await asyncio.sleep(delay)
+        self._streaming = False
+        self._update_status()
+
+    def action_toggle_disguise(self) -> None:
+        self.disguised = not self.disguised
+        self._streaming = False  # 停止流式
+        if self.disguised:
+            self._start_stream()
+        else:
+            self.render_content()
+            scroll = self.query_one("#reader_scroll", VerticalScroll)
+            scroll.scroll_home(animate=False)
+        self._update_status()
+
+    def on_key(self, event) -> None:
+        """流式模式下空格暂停/继续。"""
+        if self.disguised and event.key == "space":
+            self._paused = not self._paused
+            self._update_status()
+            event.prevent_default()
 
     def _update_status(self) -> None:
         """更新底部状态栏:章节进度 + 伪装状态。"""
@@ -202,8 +279,15 @@ class ReaderScreen(Screen):
         cur = self.chapter_idx + 1 if total else 0
         mode = f"[{self.app.disguise_name}]" if self.disguised else "[正常]"
         loading = " ⏳加载中" if self._loading else ""
+        stream_state = ""
+        if self.disguised:
+            if self._streaming:
+                stream_state = " ⏸已暂停" if self._paused else " ▶流式输出中"
+                stream_state += f" {self._stream_idx}/{len(self._stream_lines)}"
+            else:
+                stream_state = " ✓已输出完"
         self.query_one("#reader_status", Label).update(
-            f"  {mode}  第 {cur}/{total} 章{loading}  "
+            f"  {mode}{stream_state}{loading}  第 {cur}/{total} 章  "
             f"n下一章 p上一章 d伪装 c目录 q书架"
         )
 
@@ -211,34 +295,28 @@ class ReaderScreen(Screen):
         if self._loading:
             return
         if self.chapter_idx + 1 < len(self.chapters):
+            self._streaming = False
             self.run_worker(self.load_chapter(self.chapter_idx + 1), exclusive=True)
         else:
-            self.query_one("#reader_status", Label).update(
-                "  已到最后一章"
-            )
+            self.query_one("#reader_status", Label).update("  已到最后一章")
 
     def action_prev_chapter(self) -> None:
         if self._loading:
             return
         if self.chapter_idx - 1 >= 0:
+            self._streaming = False
             self.run_worker(self.load_chapter(self.chapter_idx - 1), exclusive=True)
         else:
-            self.query_one("#reader_status", Label).update(
-                "  已到第一章"
-            )
-
-    def action_toggle_disguise(self) -> None:
-        self.disguised = not self.disguised
-        self.render_content()
-        self._update_status()
+            self.query_one("#reader_status", Label).update("  已到第一章")
 
     def action_show_chapters(self) -> None:
-        """推入章节目录屏。"""
         if not self.chapters:
             return
+        self._streaming = False
         self.app.push_screen(ChapterListScreen(self.chapters, self.chapter_idx))
 
     def action_quit_reader(self) -> None:
+        self._streaming = False
         self.app.pop_screen()
 
     async def on_resume(self) -> None:
