@@ -50,6 +50,44 @@ UNIDBG_BASE="http://127.0.0.1:8099"   # unidbg 服务地址
 伪装模式把正文包进一个"正在工作"的画面,而不是把小说当屏幕主角。
 伪装时一次性渲染整章(可正常滚动阅读),不再流式输出。
 
+### `python` — 伪 Python 源码(默认)
+
+小说藏在模块 docstring(绿色统一),外面是彩色代码骨架(import/class/def)。
+
+![python 主题](docs/themes/python.png)
+
+### `claude` — Claude Code 会话
+
+tool call 卡片 + 红绿 diff + token 计数,小说是 `cat docs.md` 输出块里的暗色行。
+
+![claude 主题](docs/themes/claude.png)
+
+### `codex` — OpenAI Codex CLI
+
+Working spinner + turn 计数 + ctx 进度条,小说是暗色输出行。
+
+![codex 主题](docs/themes/codex.png)
+
+### `vim` — 伪 Vim 编辑器
+
+行号 gutter + `~` 空行 + `-- INSERT --`,小说是正在编辑的 notes.md 正文。
+
+![vim 主题](docs/themes/vim.png)
+
+### `ide` — 伪 IDE
+
+左侧彩色文件树 + `>` 引用块暗色预览 + 底部 pytest 终端面板。
+
+![ide 主题](docs/themes/ide.png)
+
+### `logtail` — 伪生产日志
+
+`DEBUG story.engine msg="..."` 暗色行,混着彩色 live 日志活动行。
+
+![logtail 主题](docs/themes/logtail.png)
+
+### 主题对照表
+
 | 主题 | 画面 | 小说伪装方式 |
 |---|---|---|
 | `python` | 伪 Python 源码(import/class/def 彩色骨架) | 模块 docstring 绿色统一 |
