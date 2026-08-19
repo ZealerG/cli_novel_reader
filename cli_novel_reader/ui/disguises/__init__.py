@@ -130,4 +130,4 @@ def available_disguises() -> list[tuple[str, str]]:
 
 
 # 导入内置主题,触发注册(装饰器)。自定义主题只需在入口导入即可。
-from cli_novel_reader.ui.disguises import claude, codex, ide, logtail, vim  # noqa: E402,F401
+from cli_novel_reader.ui.disguises import claude, codex, ide, logtail, python, vim  # noqa: E402,F401
