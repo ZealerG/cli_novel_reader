@@ -434,8 +434,9 @@ class ReaderScreen(Screen):
     def _estimate_current_para(self) -> int:
         """根据滚动位置估算用户正在阅读的段落索引(0-based)。
 
-        用滚动进度比例估算段落位置,再在渲染文本中查找段落精确行偏移做修正。
-        适用于正常模式和伪装模式(段落始终从头到尾有序排列)。
+        正常模式:滚动进度比例 + 渲染文本行偏移校准(精确)。
+        伪装模式:仅用比例估算(伪装文本的 \n 结构与终端换行不一致,
+        校准会失真,比例法更稳定)。
         """
         if not self.content or not self.content.get("paragraphs"):
             return 0
@@ -446,42 +447,33 @@ class ReaderScreen(Screen):
         scroll = self.query_one("#reader_scroll", VerticalScroll)
         scroll_y = scroll.scroll_y
         max_y = scroll.max_scroll_y
-
-        # 主方法:按滚动进度比例估算
         if max_y <= 0:
             return 0
         ratio = scroll_y / max_y
         para = int(ratio * n)
 
-        # 修正:在渲染文本中查找段落行偏移做精度校准
-        content_widget = self.query_one("#content", Static)
-        rendered = content_widget.content
-        if isinstance(rendered, Text):
-            plain = rendered.plain
-        elif isinstance(rendered, str):
-            plain = rendered
-        else:
-            plain = str(rendered) if rendered else ""
-        if plain:
-            offsets: list[int] = []
-            for p in paragraphs:
-                search = p[:15] if len(p) >= 15 else p
-                pos = plain.find(search)
-                if pos >= 0:
-                    offsets.append(plain[:pos].count("\n"))
-                else:
-                    offsets.append(-1)
-            # 如果所有段落都找到了,用二分查找修正
-            if all(o >= 0 for o in offsets):
-                calibrated = 0
-                for i, off in enumerate(offsets):
-                    if off <= scroll_y:
-                        calibrated = i
-                    else:
-                        break
-                # 只有校准结果与比例估算接近时才采用(避免错误匹配)
-                if abs(calibrated - para) <= 3:
-                    para = calibrated
+        # 正常模式:用渲染文本行偏移校准(段落以 \n\n 分隔,行偏移与视觉行一致)
+        if not self.disguised:
+            content_widget = self.query_one("#content", Static)
+            rendered = content_widget.content
+            plain = rendered if isinstance(rendered, str) else (
+                rendered.plain if isinstance(rendered, Text) else ""
+            )
+            if plain:
+                offsets: list[int] = []
+                for p in paragraphs:
+                    search = p[:15] if len(p) >= 15 else p
+                    pos = plain.find(search)
+                    offsets.append(plain[:pos].count("\n") if pos >= 0 else -1)
+                if all(o >= 0 for o in offsets):
+                    calibrated = 0
+                    for i, off in enumerate(offsets):
+                        if off <= scroll_y:
+                            calibrated = i
+                        else:
+                            break
+                    if abs(calibrated - para) <= 3:
+                        para = calibrated
 
         return min(para, n - 1)
 
