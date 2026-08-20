@@ -9,6 +9,7 @@ from textual.widgets import Button, Footer, Header, Input, Label, ListItem, List
 
 from cli_novel_reader.fanqie.books import BooksAPI
 from cli_novel_reader.ui.disguises import Disguise, get_disguise, list_disguises
+from rich.console import Console
 from rich.text import Text
 
 
@@ -148,6 +149,8 @@ class ReaderScreen(Screen):
         self._comment_loaded_para: int = -1
         self._comment_stats_loaded: bool = False
         self._footer_cache: str = ""
+        self._para_offsets: list[int] = []  # 段落视觉行偏移缓存
+        self._para_offsets_width: int = 0  # 缓存时的内容宽度(变化时重算)
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -245,6 +248,8 @@ class ReaderScreen(Screen):
             return
         text = "\n\n".join(paragraphs)
         self.query_one("#content", Static).update(text)
+        self._para_offsets = []
+        self._para_offsets_width = 0
 
     # ── 伪装渲染(静态) ────────────────────────────────
 
@@ -279,6 +284,8 @@ class ReaderScreen(Screen):
             chapter_idx=self.chapter_idx,
             chapter_total=len(self.chapters),
         )
+        self._para_offsets = []
+        self._para_offsets_width = 0
         self._set_chrome(True)
         self._set_title_for_disguise()
         scroll = self.query_one("#reader_scroll", VerticalScroll)
@@ -431,12 +438,56 @@ class ReaderScreen(Screen):
 
     # ── 段评侧栏(v:开/关+自动同步, ←→:手动切换段落) ──────────
 
+    def _get_content_width(self) -> int:
+        """获取正文渲染宽度(滚动区宽度 - 滚动条 - padding)。"""
+        scroll = self.query_one("#reader_scroll", VerticalScroll)
+        w = scroll.outer_size.width
+        if w <= 0:
+            w = 80
+        scrollbar = 1 if scroll.show_vertical_scrollbar else 0
+        return max(w - scrollbar - 4, 10)  # 4 = padding 1 2 (左右各 2)
+
+    def _compute_para_offsets(self) -> None:
+        """用 Rich Text.wrap() 计算各段落的视觉行偏移(考虑终端换行+框架头/噪声)。
+
+        Text.wrap(console, width) 返回 Lines(每个元素是一行 Text),
+        行数与 Textual 渲染后的视觉行一致(含 CJK 宽度)。
+        在段落文本中搜索各段首,定位到行号即为偏移。
+        """
+        if not self.content or not self.content.get("paragraphs"):
+            self._para_offsets = []
+            self._para_offsets_width = 0
+            return
+        paragraphs = self.content["paragraphs"]
+        content_widget = self.query_one("#content", Static)
+        rendered = content_widget.content
+        if isinstance(rendered, Text):
+            text_obj = rendered
+        elif isinstance(rendered, str):
+            text_obj = Text(rendered)
+        else:
+            text_obj = Text(str(rendered) if rendered else "")
+        width = self._get_content_width()
+        with open("/dev/null", "w") as devnull:
+            console = Console(width=width, force_terminal=False, file=devnull)
+            wrapped = text_obj.wrap(console, width)
+        offsets: list[int] = []
+        for p in paragraphs:
+            search = p[:15] if len(p) >= 15 else p
+            found = -1
+            for line_idx, line in enumerate(wrapped):
+                if search in line.plain:
+                    found = line_idx
+                    break
+            offsets.append(found)
+        self._para_offsets = offsets
+        self._para_offsets_width = width
+
     def _estimate_current_para(self) -> int:
         """根据滚动位置估算用户正在阅读的段落索引(0-based)。
 
-        正常模式:滚动进度比例 + 渲染文本行偏移校准(精确)。
-        伪装模式:仅用比例估算(伪装文本的 \n 结构与终端换行不一致,
-        校准会失真,比例法更稳定)。
+        用 _compute_para_offsets() 缓存的视觉行偏移做二分查找。
+        若缓存过期(宽度变化)则重新计算。
         """
         if not self.content or not self.content.get("paragraphs"):
             return 0
@@ -445,37 +496,25 @@ class ReaderScreen(Screen):
         if n <= 1:
             return 0
         scroll = self.query_one("#reader_scroll", VerticalScroll)
-        scroll_y = scroll.scroll_y
+        scroll_y = int(scroll.scroll_y)
+        # 缓存过期(宽度变化/未计算)则重算
+        cur_width = self._get_content_width()
+        if cur_width != self._para_offsets_width or not self._para_offsets:
+            self._compute_para_offsets()
+        offsets = self._para_offsets
+        if offsets and all(o >= 0 for o in offsets):
+            para = 0
+            for i, off in enumerate(offsets):
+                if off <= scroll_y:
+                    para = i
+                else:
+                    break
+            return min(para, n - 1)
+        # 回退:比例估算
         max_y = scroll.max_scroll_y
         if max_y <= 0:
             return 0
-        ratio = scroll_y / max_y
-        para = int(ratio * n)
-
-        # 正常模式:用渲染文本行偏移校准(段落以 \n\n 分隔,行偏移与视觉行一致)
-        if not self.disguised:
-            content_widget = self.query_one("#content", Static)
-            rendered = content_widget.content
-            plain = rendered if isinstance(rendered, str) else (
-                rendered.plain if isinstance(rendered, Text) else ""
-            )
-            if plain:
-                offsets: list[int] = []
-                for p in paragraphs:
-                    search = p[:15] if len(p) >= 15 else p
-                    pos = plain.find(search)
-                    offsets.append(plain[:pos].count("\n") if pos >= 0 else -1)
-                if all(o >= 0 for o in offsets):
-                    calibrated = 0
-                    for i, off in enumerate(offsets):
-                        if off <= scroll_y:
-                            calibrated = i
-                        else:
-                            break
-                    if abs(calibrated - para) <= 3:
-                        para = calibrated
-
-        return min(para, n - 1)
+        return min(int(scroll_y / max_y * n), n - 1)
 
     def _find_nearest_commented_para(self, target: int) -> int | None:
         """找到离 target 最近的、有评论的段落索引。"""
@@ -538,6 +577,8 @@ class ReaderScreen(Screen):
         sidebar = self.query_one("#comment_sidebar")
         sidebar.display = True
         self._comments_open = True
+        self._para_offsets = []
+        self._para_offsets_width = 0
         if not self.chapters:
             return
         ch = self.chapters[self.chapter_idx]
@@ -565,6 +606,8 @@ class ReaderScreen(Screen):
         """关闭段评侧栏。"""
         self.query_one("#comment_sidebar").display = False
         self._comments_open = False
+        self._para_offsets = []
+        self._para_offsets_width = 0
 
     async def _load_comments_for_current_para(self) -> None:
         """加载当前选中段落的 top-10 评论(按点赞数排序)。"""
