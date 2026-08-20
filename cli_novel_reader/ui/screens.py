@@ -4,6 +4,7 @@ from __future__ import annotations
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.message import Message
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Input, Label, ListItem, ListView, Static
 
@@ -89,6 +90,24 @@ class BookshelfScreen(Screen):
 
 # ── 阅读屏 ─────────────────────────────────────────────
 
+class ReaderScroll(VerticalScroll):
+    """VerticalScroll 子类:滚动位置变化时发 Scrolled 消息。
+
+    Textual 原生 VerticalScroll 在鼠标滚轮/触控板滚动时不触发
+    任何 action,导致父 Screen 无法感知滚动。此处覆写
+    watch_scroll_y 在 scroll_y 变化时发消息,让 ReaderScreen
+    能及时更新段评指示符。
+    """
+
+    class Scrolled(Message):
+        """scroll_y 变化(键盘/鼠标/编程式滚动均触发)。"""
+
+    def watch_scroll_y(self, old: float, new: float) -> None:
+        super().watch_scroll_y(old, new)
+        if round(old) != round(new):
+            self.post_message(self.Scrolled())
+
+
 class ReaderScreen(Screen):
     """阅读视图:正常模式 + 伪装模式,按 d 切换主题,Shift+d 开关。
 
@@ -159,7 +178,7 @@ class ReaderScreen(Screen):
         with Horizontal(id="reader_main"):
             with Vertical(id="reader_col"):
                 yield Label("加载中...", id="chapter_title")
-                with VerticalScroll(id="reader_scroll"):
+                with ReaderScroll(id="reader_scroll"):
                     yield Static(" ", id="content")
                 yield Label(" ", id="reader_status")
             with Vertical(id="comment_sidebar"):
@@ -448,6 +467,15 @@ class ReaderScreen(Screen):
         """PageUp:向上翻一页,更新段评指示。"""
         scroll = self.query_one("#reader_scroll", VerticalScroll)
         scroll.scroll_relative(y=-(scroll.size.height - 2), animate=False)
+        self._update_status()
+
+    def on_reader_scroll_scrolled(self, event: ReaderScroll.Scrolled) -> None:
+        """鼠标滚轮/触控板滚动也触发段评指示符更新。
+
+        VerticalScroll 原生处理鼠标滚轮但不发任何 action,
+        导致 ReaderScreen 无法感知滚动。ReaderScroll 在
+        scroll_y 变化时发 Scrolled 消息,此处统一更新状态栏。
+        """
         self._update_status()
 
     # ── 段评侧栏(v:开/关+自动同步, ←→:手动切换段落) ──────────
