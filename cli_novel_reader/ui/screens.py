@@ -11,6 +11,8 @@ from cli_novel_reader.fanqie.books import BooksAPI
 from cli_novel_reader.ui.disguises import Disguise, get_disguise, list_disguises
 from rich.console import Console
 from rich.text import Text
+from textual import events
+from textual.geometry import Size
 
 
 # ── 书架屏 ─────────────────────────────────────────────
@@ -250,6 +252,17 @@ class ReaderScreen(Screen):
         self.query_one("#content", Static).update(text)
         self._para_offsets = []
         self._para_offsets_width = 0
+        self._force_relayout()
+
+    def _force_relayout(self) -> None:
+        """强制重新计算布局(Textual Static 的已知 bug:内容变化但宽度
+        不变时 get_content_height 缓存不会失效,导致 virtual_size 停
+        留在旧值,无法滚动到内容底部)。发一个 Resize 事件触发完整重排。
+        """
+        content = self.query_one("#content", Static)
+        content.clear_cached_dimensions()
+        size = self.app.size
+        self.app.post_message(events.Resize(size, virtual_size=size))
 
     # ── 伪装渲染(静态) ────────────────────────────────
 
@@ -288,6 +301,7 @@ class ReaderScreen(Screen):
         self._para_offsets_width = 0
         self._set_chrome(True)
         self._set_title_for_disguise()
+        self._force_relayout()
         scroll = self.query_one("#reader_scroll", VerticalScroll)
         scroll.scroll_home(animate=False)
 
