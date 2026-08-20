@@ -8,6 +8,16 @@
     text-style: bold;
 }
 
+/* 阅读器主区域:正文 + 段评侧栏水平排列 */
+#reader_main {
+    height: 1fr;
+}
+
+#reader_col {
+    width: 1fr;
+    height: 1fr;
+}
+
 /* 正文内容区:宽度填满,高度自适应 */
 #content {
     padding: 1 2;
@@ -20,6 +30,38 @@
 #reader_scroll {
     height: 1fr;
     overflow-y: auto;
+}
+
+/* 段评侧栏 */
+#comment_sidebar {
+    width: 38;
+    height: 1fr;
+    background: $panel;
+    border-left: solid $primary 50%;
+    display: none;
+}
+
+#comment_header {
+    padding: 0 1;
+    background: $boost;
+    color: $text;
+    text-style: bold;
+}
+
+#comment_scroll {
+    height: 1fr;
+    overflow-y: auto;
+}
+
+#comment_list {
+    height: auto;
+}
+
+#comment_footer {
+    padding: 0 1;
+    background: $panel;
+    color: $text-muted;
+    text-style: dim;
 }
 
 /* 底部状态栏 */

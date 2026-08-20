@@ -95,6 +95,91 @@ class BooksAPI:
         except Exception:
             return []
 
+    # ── 段评(unidbg 服务) ──────────────────────────
+
+    async def get_comment_stats(self, chapter_id: str) -> dict[int, int]:
+        """获取各段落评论数量统计。
+
+        返回 {para_index: count} 映射(仅 count>0 的段落)。
+        """
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as c:
+                r = await c.post(
+                    f"{self.UNIDBG_BASE}/api/fqcomment/idea",
+                    json={"chapterId": chapter_id},
+                )
+            data = r.json()
+            if data.get("code") != 0:
+                return {}
+            inner = (
+                data.get("data", {})
+                .get("data", {})
+                .get("data", {})
+            )
+            result: dict[int, int] = {}
+            for k, v in inner.items():
+                try:
+                    idx = int(k)
+                    cnt = v.get("count", 0) if isinstance(v, dict) else 0
+                    if cnt > 0:
+                        result[idx] = cnt
+                except (ValueError, TypeError):
+                    continue
+            return result
+        except Exception:
+            return {}
+
+    async def get_paragraph_comments(
+        self, chapter_id: str, book_id: str, para_index: int, count: int = 20,
+    ) -> list[dict]:
+        """获取某段落的评论详情(按热度排序,取 top N)。
+
+        返回 [{user, text, digg_count, reply_count}] 列表,按 digg_count 降序。
+        """
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as c:
+                r = await c.post(
+                    f"{self.UNIDBG_BASE}/api/fqcomment/list",
+                    json={
+                        "chapterId": chapter_id,
+                        "bookId": book_id,
+                        "paraIndex": para_index,
+                        "commentType": 1,
+                        "count": count,
+                    },
+                )
+            data = r.json()
+            if data.get("code") != 0:
+                return []
+            dl = (
+                data.get("data", {})
+                .get("data", {})
+                .get("data_list", [])
+            )
+            comments: list[dict] = []
+            for item in dl:
+                c = item.get("comment", {})
+                common = c.get("common", {})
+                stat = c.get("stat", {})
+                text = common.get("content", {}).get("text", "")
+                user = (
+                    common.get("user_info", {})
+                    .get("base_info", {})
+                    .get("user_name", "匿名")
+                )
+                digg = stat.get("digg_count", 0)
+                reply = stat.get("reply_count", 0)
+                comments.append({
+                    "user": user,
+                    "text": text,
+                    "digg_count": digg,
+                    "reply_count": reply,
+                })
+            comments.sort(key=lambda x: x["digg_count"], reverse=True)
+            return comments
+        except Exception:
+            return []
+
     # ── 正文(unidbg 服务优先,SSR 兜底) ────────────────
 
     UNIDBG_BASE = os.environ.get("UNIDBG_BASE", "http://127.0.0.1:8099")

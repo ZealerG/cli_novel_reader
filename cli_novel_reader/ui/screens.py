@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Input, Label, ListItem, ListView, Static
 
@@ -103,6 +103,7 @@ class ReaderScreen(Screen):
     - d         切换伪装主题(python/vim/ide…)
     - Shift+d   伪装 开/关
     - f         老板键(模拟流式输出,再按恢复)
+    - v         段评侧栏(开/关,自动同步当前段落,←→切换段落)
     - c         章节目录跳转
     - q         返回书架
     """
@@ -115,6 +116,9 @@ class ReaderScreen(Screen):
         Binding("c", "show_chapters", "目录"),
         Binding("q", "quit_reader", "书架"),
         Binding("f", "panic", "老板键", show=False),
+        Binding("v", "toggle_comments", "段评", show=False),
+        Binding("left", "comments_prev_para", "上一段评", show=False),
+        Binding("right", "comments_next_para", "下一段评", show=False),
         Binding("down", "scroll_down", "下滚", show=False),
         Binding("up", "scroll_up", "上滚", show=False),
         Binding("j", "scroll_down", "下滚", show=False),
@@ -137,17 +141,31 @@ class ReaderScreen(Screen):
         self._panic_timer = None
         self._panic_idx: int = 0
         self._panic_lines: list[Text] = []
+        self._comments_open: bool = False
+        self._comment_stats: dict[int, int] = {}
+        self._comment_paras: list[int] = []
+        self._comment_para_cursor: int = 0
+        self._comment_loaded_para: int = -1
+        self._comment_stats_loaded: bool = False
+        self._footer_cache: str = ""
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with Vertical():
-            yield Label("加载中...", id="chapter_title")
-            with VerticalScroll(id="reader_scroll"):
-                yield Static(" ", id="content")
-            yield Label(" ", id="reader_status")
+        with Horizontal(id="reader_main"):
+            with Vertical(id="reader_col"):
+                yield Label("加载中...", id="chapter_title")
+                with VerticalScroll(id="reader_scroll"):
+                    yield Static(" ", id="content")
+                yield Label(" ", id="reader_status")
+            with Vertical(id="comment_sidebar"):
+                yield Label("段评", id="comment_header")
+                with VerticalScroll(id="comment_scroll"):
+                    yield ListView(id="comment_list")
+                yield Label(" ", id="comment_footer")
         yield Footer()
 
     async def on_mount(self) -> None:
+        self.query_one("#comment_sidebar").display = False
         self._update_status()
         self.chapters = await self.app.books_api.get_chapters(self.book["book_id"])
         if not self.chapters:
@@ -213,6 +231,11 @@ class ReaderScreen(Screen):
             pass
         self._loading = False
         self._update_status()
+        # 后台预加载段评统计(用于滚动时显示段落指示)
+        self._comment_stats_loaded = False
+        self._comment_stats = {}
+        self._comment_paras = []
+        self.run_worker(self._preload_comment_stats(), exclusive=True)
 
     def render_content(self) -> None:
         """正常模式:一次性渲染完整正文。"""
@@ -251,13 +274,19 @@ class ReaderScreen(Screen):
             chapter_total=len(self.chapters),
         )
         self.query_one("#content", Static).update(frame if frame else body)
+        # 缓存 footer 文本(避免滚动时重复调用 footer() 导致 PRNG 状态漂移)
+        self._footer_cache = self._disguise.footer(
+            chapter_idx=self.chapter_idx,
+            chapter_total=len(self.chapters),
+        )
         self._set_chrome(True)
         self._set_title_for_disguise()
         scroll = self.query_one("#reader_scroll", VerticalScroll)
         scroll.scroll_home(animate=False)
 
     def _set_chrome(self, disguised: bool) -> None:
-        """伪装模式隐藏 Header/Footer(快捷键说明不能曝光)。"""
+        """伪装模式隐藏 Header/Footer(快捷键说明不能曝光)。
+        段评侧栏保持可见(用户显式开启时不隐藏)。"""
         self.query_one(Header).display = not disguised
         self.query_one(Footer).display = not disguised
 
@@ -312,25 +341,46 @@ class ReaderScreen(Screen):
             scroll.scroll_home(animate=False)
         self._update_status()
 
+    def _para_indicator(self) -> str:
+        """生成不显眼的段评指示符,显示滚动位置对应的段落。
+
+        格式:¶N 或 ¶N→M (M 为最近的段评段落) 或 ¶N→M♥C (C 条评论)。
+        无评论统计时不显示。"""
+        if not self.content or not self.content.get("paragraphs"):
+            return ""
+        para = self._estimate_current_para()
+        if not self._comment_paras:
+            return ""
+        nearest = self._find_nearest_commented_para(para)
+        if nearest is None:
+            return ""
+        count = self._comment_stats.get(nearest, 0)
+        if nearest == para:
+            return f"  ¶{para + 1} ♥{count}"
+        else:
+            return f"  ¶{para + 1}→{nearest + 1} ♥{count}"
+
     def _update_status(self) -> None:
-        """底部状态栏:正常模式=章节进度;伪装模式=主题化 footer。"""
+        """底部状态栏:正常模式=章节进度;伪装模式=主题化 footer。
+
+        两种模式都附带段评段落指示符(滚动时跟随更新)。
+        伪装模式用缓存的 footer 文本(避免 PRNG 漂移)。
+        """
+        indicator = self._para_indicator()
         if self.disguised:
             label = self.query_one("#reader_status", Label)
-            if self._disguise is not None:
-                text = self._disguise.footer(
-                    chapter_idx=self.chapter_idx,
-                    chapter_total=len(self.chapters),
-                )
-                label.update(Text(text))
+            base = self._footer_cache or " "
+            if indicator:
+                label.update(Text.assemble((base, ""), (indicator, "grey53")))
             else:
-                label.update(" ")
+                label.update(Text(base))
             return
         total = len(self.chapters)
         cur = self.chapter_idx + 1 if total else 0
         loading = " ⏳加载中" if self._loading else ""
+        hint = f"n下一章 p上一章 d切主题 S+d开关 f老板键 v段评 q书架"
         self.query_one("#reader_status", Label).update(
-            f"  第 {cur}/{total} 章  {loading}  "
-            f"n下一章 p上一章 d切主题 S+d开关 c目录 q书架"
+            f"  第 {cur}/{total} 章  {loading}{indicator}  {hint}"
         )
 
     def action_next_chapter(self) -> None:
@@ -358,22 +408,230 @@ class ReaderScreen(Screen):
         self.app.pop_screen()
 
     def action_scroll_down(self) -> None:
-        """↓ / j:向下滚一行。"""
+        """↓ / j:向下滚一行,更新段评指示。"""
         self.query_one("#reader_scroll", VerticalScroll).scroll_down(animate=False)
+        self._update_status()
 
     def action_scroll_up(self) -> None:
-        """↑ / k:向上滚一行。"""
+        """↑ / k:向上滚一行,更新段评指示。"""
         self.query_one("#reader_scroll", VerticalScroll).scroll_up(animate=False)
+        self._update_status()
 
     def action_scroll_page_down(self) -> None:
-        """PageDown / Space:向下翻一页。"""
+        """PageDown / Space:向下翻一页,更新段评指示。"""
         scroll = self.query_one("#reader_scroll", VerticalScroll)
         scroll.scroll_relative(y=scroll.size.height - 2, animate=False)
+        self._update_status()
 
     def action_scroll_page_up(self) -> None:
-        """PageUp:向上翻一页。"""
+        """PageUp:向上翻一页,更新段评指示。"""
         scroll = self.query_one("#reader_scroll", VerticalScroll)
         scroll.scroll_relative(y=-(scroll.size.height - 2), animate=False)
+        self._update_status()
+
+    # ── 段评侧栏(v:开/关+自动同步, ←→:手动切换段落) ──────────
+
+    def _estimate_current_para(self) -> int:
+        """根据滚动位置估算用户正在阅读的段落索引(0-based)。
+
+        用滚动进度比例估算段落位置,再在渲染文本中查找段落精确行偏移做修正。
+        适用于正常模式和伪装模式(段落始终从头到尾有序排列)。
+        """
+        if not self.content or not self.content.get("paragraphs"):
+            return 0
+        paragraphs = self.content["paragraphs"]
+        n = len(paragraphs)
+        if n <= 1:
+            return 0
+        scroll = self.query_one("#reader_scroll", VerticalScroll)
+        scroll_y = scroll.scroll_y
+        max_y = scroll.max_scroll_y
+
+        # 主方法:按滚动进度比例估算
+        if max_y <= 0:
+            return 0
+        ratio = scroll_y / max_y
+        para = int(ratio * n)
+
+        # 修正:在渲染文本中查找段落行偏移做精度校准
+        content_widget = self.query_one("#content", Static)
+        rendered = content_widget.content
+        if isinstance(rendered, Text):
+            plain = rendered.plain
+        elif isinstance(rendered, str):
+            plain = rendered
+        else:
+            plain = str(rendered) if rendered else ""
+        if plain:
+            offsets: list[int] = []
+            for p in paragraphs:
+                search = p[:15] if len(p) >= 15 else p
+                pos = plain.find(search)
+                if pos >= 0:
+                    offsets.append(plain[:pos].count("\n"))
+                else:
+                    offsets.append(-1)
+            # 如果所有段落都找到了,用二分查找修正
+            if all(o >= 0 for o in offsets):
+                calibrated = 0
+                for i, off in enumerate(offsets):
+                    if off <= scroll_y:
+                        calibrated = i
+                    else:
+                        break
+                # 只有校准结果与比例估算接近时才采用(避免错误匹配)
+                if abs(calibrated - para) <= 3:
+                    para = calibrated
+
+        return min(para, n - 1)
+
+    def _find_nearest_commented_para(self, target: int) -> int | None:
+        """找到离 target 最近的、有评论的段落索引。"""
+        if not self._comment_paras:
+            return None
+        best = self._comment_paras[0]
+        best_dist = abs(best - target)
+        for p in self._comment_paras:
+            d = abs(p - target)
+            if d < best_dist:
+                best = p
+                best_dist = d
+        return best
+
+    def action_toggle_comments(self) -> None:
+        """v 键:开/关段评侧栏。
+        - 关闭时:打开并自动同步到当前阅读段落
+        - 开启时:若当前阅读段落与侧栏显示的不同→重新同步;相同→关闭
+        """
+        if self._panic:
+            return
+        if not self._comments_open:
+            self.run_worker(self._open_comments(), exclusive=True)
+            return
+        # 已开启:检查是否需要重新同步
+        if self._comment_paras:
+            current_para = self._estimate_current_para()
+            nearest = self._find_nearest_commented_para(current_para)
+            if nearest is not None:
+                cur_displayed = self._comment_paras[self._comment_para_cursor]
+                if nearest != cur_displayed:
+                    self._comment_para_cursor = self._comment_paras.index(nearest)
+                    self.run_worker(self._load_comments_for_current_para(), exclusive=True)
+                    return
+        # 当前段落与显示一致:关闭
+        self._close_comments()
+
+    async def _preload_comment_stats(self) -> None:
+        """后台预加载本章段评统计,用于滚动时显示段落指示。"""
+        if not self.chapters:
+            return
+        ch = self.chapters[self.chapter_idx]
+        try:
+            stats = await self.app.books_api.get_comment_stats(ch["chapter_id"])
+        except Exception:
+            return
+        # 确保还在同一章(用户可能已翻章)
+        if not self.chapters or self.chapters[self.chapter_idx] is not ch:
+            return
+        self._comment_stats = stats
+        self._comment_paras = sorted(stats.keys())
+        self._comment_stats_loaded = True
+        self._update_status()
+
+    async def _open_comments(self) -> None:
+        """打开段评侧栏,自动同步到当前阅读段落。
+
+        若已预加载段评统计则直接复用,无需再次请求。
+        """
+        sidebar = self.query_one("#comment_sidebar")
+        sidebar.display = True
+        self._comments_open = True
+        if not self.chapters:
+            return
+        ch = self.chapters[self.chapter_idx]
+        self.query_one("#comment_header", Label).update(
+            Text("段评 加载中...", style="bold cyan")
+        )
+        if not self._comment_stats_loaded:
+            stats = await self.app.books_api.get_comment_stats(ch["chapter_id"])
+            self._comment_stats = stats
+            self._comment_paras = sorted(stats.keys())
+            self._comment_stats_loaded = True
+        if not self._comment_paras:
+            self.query_one("#comment_header", Label).update(
+                Text("段评 本章无评论", style="dim")
+            )
+            self.query_one("#comment_list", ListView).clear()
+            return
+        # 同步到当前阅读段落(找最近的有评论的段落)
+        current_para = self._estimate_current_para()
+        nearest = self._find_nearest_commented_para(current_para) or self._comment_paras[0]
+        self._comment_para_cursor = self._comment_paras.index(nearest)
+        await self._load_comments_for_current_para()
+
+    def _close_comments(self) -> None:
+        """关闭段评侧栏。"""
+        self.query_one("#comment_sidebar").display = False
+        self._comments_open = False
+
+    async def _load_comments_for_current_para(self) -> None:
+        """加载当前选中段落的 top-10 评论(按点赞数排序)。"""
+        if not self._comment_paras:
+            return
+        para = self._comment_paras[self._comment_para_cursor]
+        total = self._comment_stats.get(para, 0)
+        ch = self.chapters[self.chapter_idx]
+        self.query_one("#comment_header", Label).update(
+            Text.assemble(
+                (f"段评 段落 {para + 1}", "bold cyan"),
+                (f"  ({total} 条)", "dim"),
+            )
+        )
+        self.query_one("#comment_list", ListView).clear()
+        self.query_one("#comment_list", ListView).append(
+            ListItem(Label(Text("加载中...", style="dim")))
+        )
+        comments = await self.app.books_api.get_paragraph_comments(
+            ch["chapter_id"], self.book["book_id"], para, count=20,
+        )
+        self._comment_loaded_para = para
+        lv = self.query_one("#comment_list", ListView)
+        lv.clear()
+        if not comments:
+            lv.append(ListItem(Label(Text("无评论", style="dim"))))
+        else:
+            for i, c in enumerate(comments[:10]):
+                text = Text.assemble(
+                    (f"{c['user']}", "yellow"),
+                    (f"  ❤{c['digg_count']}", "red"),
+                    (f"  {c['text']}", ""),
+                )
+                lv.append(ListItem(Label(text)))
+        # footer 提示
+        idx_in_paras = self._comment_para_cursor + 1
+        total_paras = len(self._comment_paras)
+        self.query_one("#comment_footer", Label).update(
+            Text.assemble(
+                (f"段落 {idx_in_paras}/{total_paras}", "dim"),
+                ("  ←→切换", "dim"),
+            )
+        )
+
+    def action_comments_prev_para(self) -> None:
+        """← :切换到上一个有评论的段落。"""
+        if not self._comments_open or not self._comment_paras:
+            return
+        if self._comment_para_cursor > 0:
+            self._comment_para_cursor -= 1
+            self.run_worker(self._load_comments_for_current_para(), exclusive=True)
+
+    def action_comments_next_para(self) -> None:
+        """→ :切换到下一个有评论的段落。"""
+        if not self._comments_open or not self._comment_paras:
+            return
+        if self._comment_para_cursor < len(self._comment_paras) - 1:
+            self._comment_para_cursor += 1
+            self.run_worker(self._load_comments_for_current_para(), exclusive=True)
 
     # ── 老板键(f):模拟流式输出,再按恢复 ────────────────
 
