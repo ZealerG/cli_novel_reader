@@ -28,16 +28,14 @@ class CodexDisguise(Disguise):
     # ── 单段正文 ───────────────────────────────────────
 
     def render(self, content: str) -> Text:
+        # 段落正文(噪声由 render_interleaved 統一穿插)
         parts: list[Text] = []
-        if self._rng.random() < 0.22:
-            parts.append(self._shell_block())
-            parts.append(Text(""))
         lines = self._wrap_lines(content.splitlines(), width=68)
         for ln in lines:
             if not ln.strip():
                 parts.append(Text(""))
             else:
-                parts.append(Text("  " + ln, style="dim"))
+                parts.append(Text("  " + ln, style=self.NOVEL_STYLE))
         return Text("\n").join(parts)
 
     def _shell_block(self) -> Text:
@@ -134,6 +132,10 @@ class CodexDisguise(Disguise):
             f"esc to interrupt ·⏵⏵ {self._tokens(shown_count)} tokens ↓ "
             f"· ctx {bar} {pct}% · turn {1 + (chapter_idx % 6)}"
         )
+
+    def noise_line(self) -> Text:
+        """Codex CLI 主题:噪声是 shell 执行块。"""
+        return self._shell_block()
 
     @staticmethod
     def _tokens(shown_count: int) -> str:

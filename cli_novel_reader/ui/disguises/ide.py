@@ -38,17 +38,26 @@ class IdeDisguise(Disguise):
         self._filler = Filler(f"ide:{self.context.get('chapter_id', '')}")
 
     def render(self, content: str) -> Text:
+        # 段落正文(噪声由 render_interleaved 统一穿插)
         lines = self._wrap_lines(content.splitlines(), width=58)
         out: list[Text] = []
         for ln in lines:
             if not ln.strip():
                 out.append(Text(""))
             else:
-                out.append(Text("> " + ln, style="dim"))
-        if self._rng.random() < 0.2:
-            out.append(Text(""))
-            out.append(Text("> `TODO` 段落待整理", style="grey37"))
+                out.append(Text("> " + ln, style=self.NOVEL_STYLE))
         return Text("\n").join(out)
+
+    def noise_line(self) -> Text:
+        """IDE 主题:噪声是 markdown 引用/注释(在预览区里)。"""
+        kind = self._rng.choice(["quote", "comment", "todo"])
+        if kind == "quote":
+            src = self._filler.choice(["— design doc", "ref: RFC 7231", "source: internal wiki"])
+            return Text("> " + src, style="grey37")
+        elif kind == "comment":
+            return Text("> `NOTE` 段落待整理", style="grey37")
+        else:
+            return Text("> `TODO` 需补充上下文", style="grey37")
 
     def frame(
         self,

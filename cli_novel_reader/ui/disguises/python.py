@@ -15,13 +15,29 @@ from cli_novel_reader.ui.disguises.noise import Filler
 @disguise
 class PythonDisguise(Disguise):
     name = "python"
-    description = "伪 Python 源码:小说藏在 docstring(绿),外面是彩色代码"
+    description = "伪 Python 源码:小说藏在 docstring(暗绿),外面是彩色代码"
+
+    # docstring 用暗绿:既是 Python 字符串色,又降低对比度(但可读)
+    NOVEL_STYLE: str = "rgb(108,148,108)"
 
     def __init__(self, context: dict | None = None) -> None:
         super().__init__(context)
         self._filler = Filler(f"python:{self.context.get('chapter_id', '')}")
 
     # ── 单段正文 ───────────────────────────────────────
+
+    def noise_line(self) -> Text:
+        """Python 主题:噪声是 docstring 内的附加说明行(不能是代码)。"""
+        kind = self._rng.choice(["note", "ref", "todo", "args"])
+        if kind == "note":
+            return Text("    Note: auto-generated, do not edit manually.", style=self.NOVEL_STYLE)
+        elif kind == "ref":
+            ref = self._filler.git_hash()[:8]
+            return Text.assemble(("    See: ", self.NOVEL_STYLE), (f"docs/{ref}.md", self.NOVEL_STYLE))
+        elif kind == "todo":
+            return Text("    TODO: add type hints for all public methods.", style=self.NOVEL_STYLE)
+        else:
+            return Text("    Args: raw (str): input text to parse.", style=self.NOVEL_STYLE)
 
     def render(self, content: str) -> Text:
         """小说正文 → docstring 内容(绿色统一)。"""
@@ -31,7 +47,7 @@ class PythonDisguise(Disguise):
             if not ln.strip():
                 parts.append(Text(""))
             else:
-                parts.append(Text(ln, style="green"))
+                parts.append(Text(ln, style=self.NOVEL_STYLE))
         return Text("\n").join(parts)
 
     # ── 整屏 frame ─────────────────────────────────────
@@ -59,18 +75,18 @@ class PythonDisguise(Disguise):
             Text("# SPDX-License-Identifier: MIT", style="grey37"),
             Text(""),
             # 模块 docstring 开头
-            Text('"""', style="green"),
+            Text('"""', style=self.NOVEL_STYLE),
             Text.assemble(
-                ("story_engine", "green"),
-                (".py", "green"),
-                ("  —  auto-generated parser module", "green"),
+                ("story_engine", self.NOVEL_STYLE),
+                (".py", self.NOVEL_STYLE),
+                ("  auto-generated parser module", self.NOVEL_STYLE),
             ),
-            Text.assemble(("Updated: ", "green"), (ts, "green")),
+            Text.assemble(("Updated: ", self.NOVEL_STYLE), (ts, self.NOVEL_STYLE)),
             Text(""),
             # 小说正文(docstring 内容,绿色)
             shown,
             Text(""),
-            Text('"""', style="green"),
+            Text('"""', style=self.NOVEL_STYLE),
             Text(""),
             # imports
             Text.assemble(("import", "bold cyan"), (" logging", "")),

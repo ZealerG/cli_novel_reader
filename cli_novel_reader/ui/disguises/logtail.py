@@ -23,9 +23,8 @@ class LogTailDisguise(Disguise):
         self._filler = Filler(f"logtail:{self.context.get('chapter_id', '')}")
 
     def render(self, content: str) -> Text:
+        # 段落正文(噪声由 render_interleaved 统一穿插)
         out: list[Text] = []
-        if self._rng.random() < 0.2:
-            out.append(self._active_line("INFO"))
         lines = self._wrap_lines(content.splitlines(), width=46)
         for ln in lines:
             if not ln.strip():
@@ -37,7 +36,7 @@ class LogTailDisguise(Disguise):
                     ("DEBUG ", "grey37"),
                     ("story.engine ", "cyan"),
                     ("worker=3 ", "grey37"),
-                    (f'msg="{ln}"', "dim"),
+                    (f'msg="{ln}"', self.NOVEL_STYLE),
                 )
             )
         return Text("\n").join(out)
@@ -51,6 +50,11 @@ class LogTailDisguise(Disguise):
             (f"{head}  {level:<5} ", styles[level]),
             (tail.strip(), styles[level]),
         )
+
+    def noise_line(self) -> Text:
+        """LogTail 主题:噪声是活动日志行。"""
+        level = self._filler.choice(["INFO", "INFO", "INFO", "WARN"])
+        return self._active_line(level)
 
     def frame(
         self,

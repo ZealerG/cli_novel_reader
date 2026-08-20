@@ -36,17 +36,14 @@ class ClaudeDisguise(Disguise):
     # ── 单段正文 ───────────────────────────────────────
 
     def render(self, content: str) -> Text:
-        # 约 1/5 概率在段落前插一个 diff 块(tool call 痕迹)
+        # 段落正文(噪声由 render_interleaved 统一穿插)
         parts: list[Text] = []
-        if self._rng.random() < 0.18:
-            parts.append(self._diff_block())
-            parts.append(Text(""))
         lines = self._wrap_lines(content.splitlines(), width=66)
         for ln in lines:
             if not ln.strip():
                 parts.append(Text(""))
             else:
-                parts.append(Text("   " + ln, style="dim"))
+                parts.append(Text("   " + ln, style=self.NOVEL_STYLE))
         return Text("\n").join(parts)
 
     def _diff_block(self) -> Text:
@@ -126,6 +123,18 @@ class ClaudeDisguise(Disguise):
             f"{state}⏵⏵ esc to interrupt  ·  ❯ {self._tokens(shown_count)} tokens "
             f"·  model claude-4.5"
         )
+
+    def noise_line(self) -> Text:
+        """Claude Code 主题:噪声是 tool call 痕迹。"""
+        kind = self._rng.choice(["diff", "bash", "read"])
+        if kind == "diff":
+            return self._diff_block()
+        elif kind == "bash":
+            cmd = self._filler.choice(["git status", "pytest -q", "npm run build"])
+            return Text.assemble(("  ⏺ ", "bold cyan"), ("Bash(", ""), (cmd, "bold"), (")", ""))
+        else:
+            fname = self._filler.choice(self._filler.GIT_FILES)
+            return Text.assemble(("  ⏺ ", "bold cyan"), ("Read(", ""), (fname, "bold"), (")", ""))
 
     @staticmethod
     def _tokens(shown_count: int) -> str:

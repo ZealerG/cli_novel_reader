@@ -31,10 +31,19 @@ class Disguise(ABC):
     - ``frame(shown, ...)``: 把已输出的正文包进主题画面(默认原样)
     - ``title_line(...)``: 伪装视图顶栏文案(默认空)
     - ``footer(...)``: 伪装视图底部状态栏(默认空)
+    - ``noise_line()``: 返回一行彩色工作噪声(用于段落间穿插)
     """
 
     name: str = ""
     description: str = ""
+
+    # CloakingNote 研究发现:显式低对比度色比 dim 更可靠
+    # (dim 在浅色终端会失效);用中等灰:足够阅读但不如噪声醒目
+    NOVEL_STYLE: str = "rgb(130,130,130)"
+    # 噪声行用高对比度,吸引注意力(信噪比原理)
+    NOISE_STYLE: str = "bold"
+    # 段落间噪声插入概率(每隔 N 段插一行)
+    NOISE_EVERY: int = 4
 
     def __init__(self, context: dict | None = None) -> None:
         self.context = context or {}
@@ -86,6 +95,72 @@ class Disguise(ABC):
         """伪装视图底部状态栏。返回空串则显示空白。"""
         return ""
 
+    def noise_line(self) -> Text:
+        """一行彩色工作噪声,用于段落间穿插。默认从 Filler 取。"""
+        from cli_novel_reader.ui.disguises.noise import Filler
+        if not hasattr(self, "_filler"):
+            self._filler = Filler(f"{self.name}:{self.context.get('chapter_id', '')}")
+        kind = self._rng.choice(["git", "pytest", "build", "http", "docker", "cargo", "npm"])
+        if kind == "git":
+            return Text(self._filler.git_line(), style="green")
+        elif kind == "pytest":
+            return Text(self._filler.pytest_line(), style="green")
+        elif kind == "build":
+            return Text(self._filler.build_line(), style="cyan")
+        elif kind == "http":
+            return Text(self._filler.http_line(), style="yellow")
+        elif kind == "docker":
+            return Text(self._filler.docker_line(), style="cyan")
+        elif kind == "cargo":
+            return Text(self._filler.cargo_line(), style="green")
+        else:
+            return Text(self._filler.npm_line(), style="cyan")
+
+    def panic_lines(self, count: int = 200) -> list[Text]:
+        """生成纯噪声行(不含小说内容),用于老板键流式输出。
+
+        子类可覆写以匹配主题风格;默认生成随机代码行 + 构建日志混合。
+        """
+        from cli_novel_reader.ui.disguises.noise import Filler
+        if not hasattr(self, "_filler"):
+            self._filler = Filler(f"{self.name}:{self.context.get('chapter_id', '')}")
+        lines: list[Text] = []
+        for _ in range(count):
+            kind = self._rng.choice(["code", "code", "code", "pytest", "git", "build", "log"])
+            if kind == "code":
+                lines.append(Text(self._filler.code_line(), style="green"))
+            elif kind == "pytest":
+                lines.append(Text(self._filler.pytest_line(), style="green"))
+            elif kind == "git":
+                lines.append(Text(self._filler.git_line(), style="cyan"))
+            elif kind == "build":
+                lines.append(Text(self._filler.build_line(), style="cyan"))
+            else:
+                lines.append(Text(self._filler.worker_line(), style="grey53"))
+        return lines
+
+    def render_interleaved(self, content: str) -> Text:
+        """渲染正文 + 段落间穿插噪声行(信噪比原理)。"""
+        paragraphs = content.split("\n\n")
+        parts: list[Text] = []
+        since_noise = 0
+        for para in paragraphs:
+            para = para.strip()
+            if not para:
+                parts.append(Text(""))
+                continue
+            rendered = self.render(para)
+            if not isinstance(rendered, Text):
+                rendered = Text(str(rendered))
+            parts.append(rendered)
+            parts.append(Text(""))
+            since_noise += 1
+            if since_noise >= self.NOISE_EVERY and self._rng.random() < 0.7:
+                parts.append(self.noise_line())
+                parts.append(Text(""))
+                since_noise = 0
+        return Text("\n").join(parts)
+
     # ── 便捷工具 ───────────────────────────────────────
 
     @staticmethod
@@ -130,4 +205,4 @@ def available_disguises() -> list[tuple[str, str]]:
 
 
 # 导入内置主题,触发注册(装饰器)。自定义主题只需在入口导入即可。
-from cli_novel_reader.ui.disguises import claude, codex, ide, logtail, python, vim  # noqa: E402,F401
+from cli_novel_reader.ui.disguises import claude, codex, gitdiff, ide, logtail, python, vim  # noqa: E402,F401

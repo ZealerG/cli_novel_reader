@@ -87,20 +87,22 @@ class BookshelfScreen(Screen):
 # ── 阅读屏 ─────────────────────────────────────────────
 
 class ReaderScreen(Screen):
-    """阅读视图:正常模式 + 伪装流式模式,按 d 切换。
+    """阅读视图:正常模式 + 伪装模式,按 d 切换主题,Shift+d 开关。
 
     正常模式:完整正文,可上下滚动阅读。
-    伪装模式:正文逐行流式输出(像 tail -f 日志),自动滚动,
-    看起来像程序在实时输出日志/构建信息。
+    伪装模式:正文一次性渲染整章,包进主题工作画面(伪代码/日志/会话),
+    可正常上下滚动阅读,不自动翻章。
 
     快捷键:
-    - space     暂停/继续流式输出(伪装模式)
-    - j/↓       向下滚
-    - k/↑       向上滚
+    - ↓/j       向下滚一行
+    - ↑/k       向上滚一行
+    - Space/PgDn  下翻一页
+    - PgUp      上翻一页
     - n         下一章
     - p         上一章
     - d         切换伪装主题(python/vim/ide…)
     - Shift+d   伪装 开/关
+    - f         老板键(模拟流式输出,再按恢复)
     - c         章节目录跳转
     - q         返回书架
     """
@@ -112,6 +114,14 @@ class ReaderScreen(Screen):
         Binding("shift+d", "toggle_disguise", "开关"),
         Binding("c", "show_chapters", "目录"),
         Binding("q", "quit_reader", "书架"),
+        Binding("f", "panic", "老板键", show=False),
+        Binding("down", "scroll_down", "下滚", show=False),
+        Binding("up", "scroll_up", "上滚", show=False),
+        Binding("j", "scroll_down", "下滚", show=False),
+        Binding("k", "scroll_up", "上滚", show=False),
+        Binding("pagedown", "scroll_page_down", "下翻页", show=False),
+        Binding("pageup", "scroll_page_up", "上翻页", show=False),
+        Binding("space", "scroll_page_down", "下翻页", show=False),
     ]
 
     def __init__(self, book: dict) -> None:
@@ -123,6 +133,10 @@ class ReaderScreen(Screen):
         self.content: dict | None = None
         self._loading = False
         self._disguise: Disguise | None = None
+        self._panic: bool = False
+        self._panic_timer = None
+        self._panic_idx: int = 0
+        self._panic_lines: list[Text] = []
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -160,7 +174,6 @@ class ReaderScreen(Screen):
         if self._loading or not (0 <= idx < len(self.chapters)):
             return
         self._loading = True
-        self._streaming = False
         self.chapter_idx = idx
         ch = self.chapters[idx]
         title = ch.get("title") or f"第{idx+1}章"
@@ -228,7 +241,7 @@ class ReaderScreen(Screen):
             },
         )
         full = "\n\n".join(paragraphs)
-        body = self._disguise.render(full)
+        body = self._disguise.render_interleaved(full)
         if not isinstance(body, Text):
             body = Text(str(body))
         frame = self._disguise.frame(
@@ -343,6 +356,90 @@ class ReaderScreen(Screen):
 
     def action_quit_reader(self) -> None:
         self.app.pop_screen()
+
+    def action_scroll_down(self) -> None:
+        """↓ / j:向下滚一行。"""
+        self.query_one("#reader_scroll", VerticalScroll).scroll_down(animate=False)
+
+    def action_scroll_up(self) -> None:
+        """↑ / k:向上滚一行。"""
+        self.query_one("#reader_scroll", VerticalScroll).scroll_up(animate=False)
+
+    def action_scroll_page_down(self) -> None:
+        """PageDown / Space:向下翻一页。"""
+        scroll = self.query_one("#reader_scroll", VerticalScroll)
+        scroll.scroll_relative(y=scroll.size.height - 2, animate=False)
+
+    def action_scroll_page_up(self) -> None:
+        """PageUp:向上翻一页。"""
+        scroll = self.query_one("#reader_scroll", VerticalScroll)
+        scroll.scroll_relative(y=-(scroll.size.height - 2), animate=False)
+
+    # ── 老板键(f):模拟流式输出,再按恢复 ────────────────
+
+    def action_panic(self) -> None:
+        """f 键:开启/关闭模拟流式输出。
+
+        开启时:用当前伪装主题快速逐行输出,自动滚动,
+        内容一闪而过难以看清;再次按 f 恢复原来的静态渲染和滚动位置。
+        未开启伪装时自动开启。
+        """
+        if self._panic:
+            self._panic_stop()
+        else:
+            self._panic_start()
+
+    def _panic_start(self) -> None:
+        """启动模拟流式输出(纯代码/噪声,不含小说内容)。"""
+        if self.content is None:
+            return
+        # 未开启伪装时自动开启
+        if not self.disguised:
+            self.disguised = True
+            self._render_disguise()
+        if self._disguise is None:
+            return
+        # 保存当前滚动位置(恢复时还原)
+        scroll = self.query_one("#reader_scroll", VerticalScroll)
+        self._panic_scroll_y = scroll.scroll_y
+        # 生成纯代码/噪声行(不含小说内容)
+        self._panic_lines = self._disguise.panic_lines(300)
+        self._panic_idx = 0
+        self._panic = True
+        # 快速逐行输出(~30 行/秒)
+        self._panic_timer = self.set_interval(1 / 30, self._panic_tick)
+
+    def _panic_tick(self) -> None:
+        """每 tick 输出更多行,自动滚到最新行。"""
+        if not self._panic or not self._panic_lines:
+            return
+        # 每次 tick 输出 2 行(让内容快速闪过)
+        step = 2
+        end = min(self._panic_idx + step, len(self._panic_lines))
+        shown = Text("\n").join(self._panic_lines[:end])
+        self.query_one("#content", Static).update(shown)
+        self._panic_idx = end
+        # 自动滚到底部
+        scroll = self.query_one("#reader_scroll", VerticalScroll)
+        scroll.scroll_end(animate=False)
+        # 输出完毕后自动循环(持续闪烁)
+        if self._panic_idx >= len(self._panic_lines):
+            self._panic_idx = 0
+
+    def _panic_stop(self) -> None:
+        """停止流式输出,恢复静态渲染和滚动位置。"""
+        if self._panic_timer is not None:
+            self._panic_timer.stop()
+            self._panic_timer = None
+        self._panic = False
+        self._panic_lines = []
+        self._panic_idx = 0
+        # 恢复静态渲染
+        if self.disguised and self.content is not None:
+            self._render_disguise()
+            # 恢复原来的滚动位置
+            scroll = self.query_one("#reader_scroll", VerticalScroll)
+            scroll.scroll_to(0, getattr(self, "_panic_scroll_y", 0), animate=False)
 
     async def on_resume(self) -> None:
         """从章节目录屏返回后,若选了新章节则跳转。"""

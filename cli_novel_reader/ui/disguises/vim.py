@@ -30,17 +30,19 @@ class VimDisguise(Disguise):
         super().__init__(context)
         self._filler = Filler(f"vim:{self.context.get('chapter_id', '')}")
 
+    def noise_line(self) -> Text:
+        """Vim 主题:噪声是注释行。"""
+        todo = self._filler.choice(_TODOS)
+        if "%d" in todo:
+            todo = todo % self._filler.number(100, 999)
+        return Text(todo, style="grey37")
+
     def render(self, content: str) -> Text:
+        # 段落正文(噪声由 render_interleaved 统一穿插)
         lines = self._wrap_lines(content.splitlines(), width=72)
         out: list[Text] = []
         for ln in lines:
-            out.append(Text(ln))
-        # 段间注释痕迹
-        if self._rng.random() < 0.15:
-            todo = self._filler.choice(_TODOS)
-            if "%d" in todo:
-                todo = todo % self._filler.number(100, 999)
-            out.append(Text(todo, style="grey37"))
+            out.append(Text(ln, style=self.NOVEL_STYLE))
         return Text("\n").join(out)
 
     def frame(

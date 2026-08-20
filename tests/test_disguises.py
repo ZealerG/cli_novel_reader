@@ -15,7 +15,7 @@ SAMPLE = "第一章 开端\n\n他站在窗前,看着远方的城市。\n夜色�
 
 def test_all_disguises_registered() -> None:
     names = list_disguises()
-    for required in ("vim", "ide", "logtail", "claude", "codex", "python"):
+    for required in ("vim", "ide", "logtail", "claude", "codex", "python", "gitdiff"):
         assert required in names, f"缺少主题 {required}"
 
 
@@ -59,6 +59,19 @@ def test_available_disguises_has_descriptions() -> None:
     for name, desc in items:
         assert name
         assert desc
+
+
+def test_render_interleaved_has_noise() -> None:
+    """render_interleaved 应在段落间插入噪声行。"""
+    long_content = "\n\n".join([f"段落{i}的内容文字" for i in range(12)])
+    for name in list_disguises():
+        d = get_disguise(name, context={"chapter_id": 12345})
+        body = d.render_interleaved(long_content)
+        assert isinstance(body, Text)
+        assert "段落0的内容文字" in body.plain
+        # 多段后应有噪声穿插(内容比纯拼接的正文长)
+        plain_paras = "\n\n".join([f"段落{i}的内容文字" for i in range(12)])
+        assert len(body.plain) > len(plain_paras.replace("\n", ""))
 
 
 def test_unknown_disguise_raises() -> None:

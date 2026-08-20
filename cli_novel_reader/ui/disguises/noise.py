@@ -108,6 +108,49 @@ class Filler:
         ])
         return tpl
 
+    # ── 真实风格工作输出(genact 式) ───────────────────
+
+    def docker_line(self) -> str:
+        """仿 docker build 输出。"""
+        step = self.number(1, 12)
+        tpl = self.choice([
+            f"Step {step}/12 : FROM node:21-alpine AS builder",
+            f" ---> {self.git_hash()}",
+            f"Step {step}/12 : RUN npm ci --production",
+            f" ---> Running in {self.git_hash()[:8]}",
+            f" ---> {self.git_hash()}",
+            f"Removing intermediate container {self.git_hash()[:8]}",
+            f"Successfully built {self.git_hash()}",
+            f"Successfully tagged story-engine:{self.choice(['latest', 'v1.2.3', 'dev'])}",
+        ])
+        return tpl
+
+    def cargo_line(self) -> str:
+        """仿 cargo build 输出。"""
+        crate = self.choice(["story_engine", "api_client", "text_parser", "rate_limit"])
+        tpl = self.choice([
+            f"   Compiling {crate} v0.{self.number(1, 8)}.{self.number(0, 19)}",
+            f"    Finished release [optimized] target(s) in {self.number(3, 47)}.{self.number(0, 9)}s",
+            f"     Running `target/release/{crate}`",
+            f"warning: unused variable: `config`",
+            f"  --> src/main.rs:{self.number(10, 320)}:{self.number(1, 40)}",
+        ])
+        return tpl
+
+    def npm_line(self) -> str:
+        """仿 npm install 输出。"""
+        pkg = self.choice([
+            "express", "lodash", "axios", "chalk", "dotenv",
+            "textual", "rich", "httpx", "pydantic",
+        ])
+        tpl = self.choice([
+            f"added {self.number(12, 348)} packages in {self.number(2, 18)}s",
+            f"{pkg}@{self.number(1, 18)}.{self.number(0, 99)}.{self.number(0, 99)}",
+            f"│ {pkg} │ gzip: {self.number(4, 124)} kB",
+            f"npm warn deprecated {pkg}@{self.number(1, 5)}.0.0: Use newer version",
+        ])
+        return tpl
+
     def diff_hunk(self, line_no: int | None = None) -> list[str]:
         """生成一个绿/红的小 diff 块。"""
         start = line_no or self.number(12, 320)
@@ -130,6 +173,69 @@ class Filler:
             "读 tests 确认预期行为没有变化…",
             "输出改动 diff,等待确认…",
         ])
+
+    def code_line(self) -> str:
+        """生成一行随机代码(仿 Python)。"""
+        kind = self.choice(["import", "assign", "call", "def", "if", "for", "return", "comment"])
+        if kind == "import":
+            pkg = self.choice(["json", "logging", "pathlib", "typing", "asyncio", "hashlib", "collections"])
+            return f"import {pkg}"
+        elif kind == "assign":
+            var = self.choice(["result", "data", "config", "ctx", "cache", "payload"])
+            val = self.choice([
+                f"self._decode({self.word()})",
+                f"json.loads(body)",
+                f"{{'id': {self.number(1, 9999)}, 'ts': time.time()}}",
+                f"[x for x in items if x.ok]",
+                f"None",
+            ])
+            indent = self.choice(["", "    ", "        "])
+            return f"{indent}{var} = {val}"
+        elif kind == "call":
+            fn = self.choice(["log.debug", "cache.set", "queue.push", "parser.parse", "client.get"])
+            arg = self.choice([
+                f"'seg_{self.word()}'",
+                f"key, value, ttl={self.number(30, 3600)}",
+                f"raw, retries={self.number(0, 3)}",
+                f"url, timeout={self.number(3, 30)}",
+            ])
+            indent = self.choice(["    ", "        "])
+            return f"{indent}{fn}({arg})"
+        elif kind == "def":
+            name = self.choice(["parse", "_normalize", "_decode", "_validate", "_flush", "_retry"])
+            indent = self.choice(["", "    "])
+            return f"{indent}def {name}(self, raw: str) -> dict:"
+        elif kind == "if":
+            cond = self.choice([
+                "not raw",
+                "resp.status != 200",
+                "cache.is_expired(key)",
+                "retry < MAX_RETRIES",
+                "not result",
+            ])
+            indent = self.choice(["    ", "        "])
+            return f"{indent}if {cond}:"
+        elif kind == "for":
+            loop = self.choice([
+                "for item in items:",
+                "for key, val in data.items():",
+                "for _ in range(retries):",
+            ])
+            indent = self.choice(["    ", "        "])
+            return f"{indent}{loop}"
+        elif kind == "return":
+            ret = self.choice(["None", "result", "self._cache.get(key)", "parsed"])
+            indent = self.choice(["    ", "        "])
+            return f"{indent}return {ret}"
+        else:
+            comment = self.choice([
+                "# TODO: refactor this",
+                "# FIXME: handle edge case",
+                "# NOTE: see issue #429",
+                "# type: ignore[misc]",
+            ])
+            indent = self.choice(["", "    ", "        "])
+            return f"{indent}{comment}"
 
     def word(self) -> str:
         return "%05x" % self._rng.getrandbits(20)

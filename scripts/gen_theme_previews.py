@@ -39,7 +39,7 @@ WIDTH = 100  # 列数(影响 SVG 宽度)
 HEIGHT = 34  # 行数(影响 SVG 高度)
 
 # 主题顺序(README 展示顺序)
-ORDER = ["python", "claude", "codex", "vim", "ide", "logtail"]
+ORDER = ["python", "gitdiff", "claude", "codex", "vim", "ide", "logtail"]
 
 
 def render_theme(name: str) -> Text:
@@ -49,7 +49,7 @@ def render_theme(name: str) -> Text:
         "chapter_idx": 1028,
         "book_name": "诸神愚戏",
     })
-    body = d.render(SAMPLE)
+    body = d.render_interleaved(SAMPLE)
     if not isinstance(body, Text):
         body = Text(str(body))
     frame = d.frame(
